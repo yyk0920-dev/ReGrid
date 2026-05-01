@@ -1,4 +1,4 @@
-# main.py
+# main
 
 import time
 from sensor import get_power_data
