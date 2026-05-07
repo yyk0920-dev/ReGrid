@@ -1,26 +1,51 @@
-# main.py
-
 import time
+
+from comm import broadcast_message, start_server_thread
+from config import NODE_ID, PEER_NODES, SAMPLE_INTERVAL_SEC
+from data_logger import append_jsonl, build_event, send_to_n8n
+from fault_detection import FaultDetector
+from power_control import PowerController
+from relay import cleanup_relays
 from sensor import get_power_data
-from fault_detection import detect_fault
-from power_control import handle_fault
-# from comm import send_message
+
+
+def handle_peer_message(message, address):
+    fault = message.get("fault")
+    node_id = message.get("node_id", address[0])
+    if fault and fault != "NORMAL":
+        print(f"Peer fault reported by {node_id}: {fault}")
+
 
 def main():
+    detector = FaultDetector()
+    controller = PowerController()
+    start_server_thread(on_message=handle_peer_message)
+
     while True:
-        voltage, current = get_power_data()
+        data = get_power_data()
+        voltage = data["voltage"]
+        current = data["current"]
 
-        print(f"전압: {voltage:.2f}V, 전류: {current:.2f}A")
+        fault = detector.detect(voltage, current)
+        controller.handle_fault(fault)
 
-        fault = detect_fault(current)
-        print(f"상태: {fault}")
+        event = build_event(NODE_ID, voltage, current, fault)
+        append_jsonl(event)
+        send_to_n8n(event)
+        broadcast_message(event, PEER_NODES)
 
-        handle_fault(fault)
+        print(
+            f"[{NODE_ID}] voltage={voltage:.2f}V "
+            f"current={current:.2f}A fault={fault}"
+        )
 
-        # TODO: 다른 라즈베리파이에 상태 전송
-        # send_message(fault, "192.168.0.X")
+        time.sleep(SAMPLE_INTERVAL_SEC)
 
-        time.sleep(1)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Stopping microgrid controller")
+    finally:
+        cleanup_relays()
