@@ -1,3 +1,6 @@
+# config.py - ReGrid 시스템 설정 파일
+# 임계값, 핀 설정, 네트워크 설정 등 시스템 파라미터 정의
+
 CURRENT_THRESHOLD = 5.0
 CURRENT_MIN = 0.1
 VOLTAGE_MIN = 180.0

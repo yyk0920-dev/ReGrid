@@ -1,5 +1,9 @@
 # fault_detection.py - n8n 연결 payload 지원
 
+# fault_detection.py - 결함 감지 모듈
+# 전압/전류 모니터링 및 결함 분류
+# 히스테리시스 필터링 + n8n 페이로드 지원
+
 from datetime import datetime
 
 from config import (
@@ -40,6 +44,16 @@ FAULT_MESSAGES = {
 
 
 def classify_fault(voltage, current):
+    """
+    전압과 전류 값을 기반으로 결함을 분류합니다.
+    
+    Args:
+        voltage (float): 측정된 전압 (V)
+        current (float): 측정된 전류 (A)
+    
+    Returns:
+        str: 결함 유형 ("NORMAL", "OVERLOAD", "DISCONNECT", "UNDERVOLTAGE", "OVERVOLTAGE")
+    """
     if current > CURRENT_THRESHOLD:
         return "OVERLOAD"
     if current < CURRENT_MIN:
@@ -75,6 +89,7 @@ class FaultDetector:
 
     def detect(self, voltage, current):
         candidate = classify_fault(voltage, current)
+        previous_fault = self.confirmed_fault
 
         if candidate == "NORMAL":
             self._normal_count += 1
@@ -82,17 +97,23 @@ class FaultDetector:
             self._candidate_count = 0
             if self._normal_count >= NORMAL_CONFIRM_COUNT:
                 self.confirmed_fault = "NORMAL"
-            return self.confirmed_fault
-
-        self._normal_count = 0
-        if candidate == self._candidate_fault:
-            self._candidate_count += 1
         else:
-            self._candidate_fault = candidate
-            self._candidate_count = 1
+            self._normal_count = 0
+            if candidate == self._candidate_fault:
+                self._candidate_count += 1
+            else:
+                self._candidate_fault = candidate
+                self._candidate_count = 1
 
-        if self._candidate_count >= FAULT_CONFIRM_COUNT:
-            self.confirmed_fault = candidate
+            if self._candidate_count >= FAULT_CONFIRM_COUNT:
+                self.confirmed_fault = candidate
+
+        # 상태 변화 로깅
+        if self.confirmed_fault != previous_fault:
+            level = FAULT_LEVELS.get(self.confirmed_fault, "unknown")
+            message = FAULT_MESSAGES.get(self.confirmed_fault, "Unknown fault")
+            print(f"[FAULT-DETECT] State changed: {previous_fault} → {self.confirmed_fault} "
+                  f"(V={voltage:.1f}, I={current:.1f}) [{level}] {message}")
 
         return self.confirmed_fault
 
