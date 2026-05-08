@@ -405,4 +405,3 @@ def get_communication_status():
 
 # Initialize message processor
 _message_processor_thread = start_message_processor()
-    return thread
