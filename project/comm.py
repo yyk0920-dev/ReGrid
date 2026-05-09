@@ -193,9 +193,13 @@ def send_message(message, target_ip, port=PORT, timeout=2.0, require_ack=False):
         성공 여부
     """
     peer = get_peer_connection(target_ip, port)
+    outbound_message = message.copy() if isinstance(message, dict) else {"payload": message}
+    message_id = f"{time.time()}_{threading.current_thread().ident}"
+    outbound_message["message_id"] = message_id
+    outbound_message["require_ack"] = require_ack
     
     # 메시지 큐에 추가
-    message_id = _message_queue.add_message(message)
+    message_id = _message_queue.add_message(outbound_message, message_id=message_id)
     if not message_id:
         return False
     
@@ -212,8 +216,8 @@ def send_message(message, target_ip, port=PORT, timeout=2.0, require_ack=False):
                         return False
             
             # 메시지 전송
-            if peer.send_message(message):
-                _message_queue.mark_sent(message_id, message)
+            if peer.send_message(outbound_message):
+                _message_queue.mark_sent(message_id, outbound_message)
                 
                 # ACK 대기 (필요시)
                 if require_ack:

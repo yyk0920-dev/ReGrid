@@ -1,11 +1,15 @@
-# relay.py - 릴레이 제어 모듈
-# Raspberry Pi GPIO를 통한 전력 제어 릴레이 관리
-# 상태 추적, 재시도 로직, 긴급 정지 기능 포함
+"""Relay control for node isolation, source selection, and ESS backup."""
 
 import time
-from datetime import datetime
 
-from config import RELAY_ACTIVE_HIGH, RELAY_BACKUP, RELAY_MAIN
+from config import (
+    RELAY_ACTIVE_HIGH,
+    RELAY_BACKUP,
+    RELAY_ESS,
+    RELAY_NODE,
+    RELAY_SOURCE_1,
+    RELAY_SOURCE_2,
+)
 
 try:
     import RPi.GPIO as GPIO
@@ -13,35 +17,51 @@ except ImportError:
     GPIO = None
 
 
-# Relay state tracking
+RELAY_SWITCH_DELAY = 0.5
+RELAY_MAX_RETRY = 3
+RELAY_RETRY_DELAY = 0.1
+
+RELAY_PINS = {
+    "node": RELAY_NODE,
+    "backup": RELAY_BACKUP,
+    "source_1": RELAY_SOURCE_1,
+    "source_2": RELAY_SOURCE_2,
+    "ess": RELAY_ESS,
+}
+
+
 class RelayState:
-    """
-    릴레이 상태 추적 클래스.
-    
-    메인/백업 전원 상태와 마지막 변경 시간을 기록합니다.
-    디버깅과 모니터링에 사용됩니다.
-    """
     def __init__(self):
-        self.main_active = False  # 메인 전원 ON/OFF 상태
-        self.backup_active = False  # 백업 전원 ON/OFF 상태
-        self.last_change_time = {}  # 마지막 상태 변경 시간 기록
-        self.is_dry_run = GPIO is None  # 하드웨어 시뮬레이션 모드
-    
+        self.states = {name: False for name in RELAY_PINS}
+        self.last_change_time = {}
+        self.is_dry_run = GPIO is None
+
+    @property
+    def main_active(self):
+        return self.states["node"]
+
+    @main_active.setter
+    def main_active(self, value):
+        self.states["node"] = value
+
+    @property
+    def backup_active(self):
+        return self.states["backup"] or self.states["ess"]
+
+    @backup_active.setter
+    def backup_active(self, value):
+        self.states["backup"] = value
+
     def log_state(self):
-        """현재 릴레이 상태를 로그로 출력합니다."""
-        state_str = f"MAIN={'ON' if self.main_active else 'OFF'} BACKUP={'ON' if self.backup_active else 'OFF'}"
-        if self.is_dry_run:
-            print(f"[DRY-RUN] Relay state: {state_str}")
-        else:
-            print(f"[RELAY] State: {state_str}")
+        state = " ".join(
+            f"{name.upper()}={'ON' if active else 'OFF'}"
+            for name, active in self.states.items()
+        )
+        prefix = "[DRY-RUN]" if self.is_dry_run else "[RELAY]"
+        print(f"{prefix} Relay state: {state}")
 
 
 _relay_state = RelayState()
-
-# Relay configuration
-RELAY_SWITCH_DELAY = 0.5  # 릴레이 응답 시간 (초)
-RELAY_MAX_RETRY = 3  # 최대 재시도 횟수
-RELAY_RETRY_DELAY = 0.1  # 재시도 간격 (초)
 
 
 def _active_level():
@@ -57,149 +77,119 @@ def _inactive_level():
 
 
 def _write_with_retry(pin, active, retry_count=0):
-    """
-    릴레이 쓰기 (재시도 로직 포함).
-    
-    Args:
-        pin: GPIO 핀 번호
-        active: 활성화 여부 (True=ON, False=OFF)
-        retry_count: 현재 재시도 횟수
-    
-    Returns:
-        성공 여부 (True/False)
-    """
     if GPIO is None:
         print(f"[DRY-RUN] relay pin {pin} -> {'ON' if active else 'OFF'}")
         return True
-    
+
     try:
         level = _active_level() if active else _inactive_level()
         GPIO.output(pin, level)
-        
-        # 상태 변경 시간 기록
         _relay_state.last_change_time[pin] = time.time()
-        
-        print(f"[RELAY] GPIO {pin} set to {'ON' if active else 'OFF'} (attempt {retry_count + 1})")
+        print(f"[RELAY] GPIO {pin} set to {'ON' if active else 'OFF'}")
         return True
-        
-    except RuntimeError as e:
-        print(f"[RELAY] GPIO {pin} write failed: {e}")
-        
-        # 재시도 로직
+    except RuntimeError as exc:
+        print(f"[RELAY] GPIO {pin} write failed: {exc}")
         if retry_count < RELAY_MAX_RETRY:
-            print(f"[RELAY] Retrying... ({retry_count + 1}/{RELAY_MAX_RETRY})")
             time.sleep(RELAY_RETRY_DELAY)
             return _write_with_retry(pin, active, retry_count + 1)
-        else:
-            print(f"[RELAY] ERROR: Failed to set GPIO {pin} after {RELAY_MAX_RETRY} retries")
-            return False
-    
-    except Exception as e:
-        print(f"[RELAY] CRITICAL ERROR on GPIO {pin}: {e}")
+        return False
+    except Exception as exc:
+        print(f"[RELAY] Critical error on GPIO {pin}: {exc}")
         return False
 
 
 def setup_relays():
-    """릴레이 초기화."""
     if GPIO is None:
         print("[DRY-RUN] RPi.GPIO is not available; relay output is simulated")
         return
-    
+
     try:
         GPIO.setmode(GPIO.BCM)
-        GPIO.setup(RELAY_MAIN, GPIO.OUT, initial=_inactive_level())
-        GPIO.setup(RELAY_BACKUP, GPIO.OUT, initial=_inactive_level())
-        print("[RELAY] GPIO setup complete (MAIN={}, BACKUP={})".format(RELAY_MAIN, RELAY_BACKUP))
+        for pin in set(RELAY_PINS.values()):
+            GPIO.setup(pin, GPIO.OUT, initial=_inactive_level())
+        print(f"[RELAY] GPIO setup complete: {RELAY_PINS}")
         _relay_state.log_state()
-    except Exception as e:
-        print(f"[RELAY] Setup failed: {e}")
+    except Exception as exc:
+        print(f"[RELAY] Setup failed: {exc}")
 
 
-def cleanup_relays():
-    """릴레이 정리 (종료 시 호출)."""
-    try:
-        if GPIO is not None:
-            # 안전 종료: 모든 릴레이 OFF
-            _write_with_retry(RELAY_MAIN, False)
-            _write_with_retry(RELAY_BACKUP, False)
-            time.sleep(RELAY_SWITCH_DELAY)
-            GPIO.cleanup()
-            print("[RELAY] GPIO cleanup complete")
-    except Exception as e:
-        print(f"[RELAY] Cleanup error: {e}")
+def set_relay(name, active):
+    if name not in RELAY_PINS:
+        raise ValueError(f"Unknown relay name: {name}")
 
-
-# Initial setup
-setup_relays()
+    pin = RELAY_PINS[name]
+    success = _write_with_retry(pin, active)
+    if success:
+        _relay_state.states[name] = active
+        _relay_state.last_change_time[name] = time.time()
+        _relay_state.log_state()
+    return success
 
 
 def cut_main_power():
-    """메인 전원 차단."""
-    print("[RELAY] >>> Main power CUT")
-    success = _write_with_retry(RELAY_MAIN, True)
-    if success:
-        _relay_state.main_active = True
-        _relay_state.log_state()
-    else:
-        print("[RELAY] WARNING: Main power cut may have failed!")
-    return success
+    print("[RELAY] >>> Node relay OPEN / isolate local section")
+    return set_relay("node", True)
 
 
 def restore_main_power():
-    """메인 전원 복구."""
-    print("[RELAY] >>> Main power RESTORE")
-    success = _write_with_retry(RELAY_MAIN, False)
-    if success:
-        _relay_state.main_active = False
-        _relay_state.log_state()
-    else:
-        print("[RELAY] WARNING: Main power restore may have failed!")
-    return success
+    print("[RELAY] >>> Node relay CLOSE / restore local section")
+    return set_relay("node", False)
 
 
 def switch_to_backup():
-    """백업 전원 활성화."""
-    print("[RELAY] >>> Backup power ON")
-    success = _write_with_retry(RELAY_BACKUP, True)
-    if success:
-        _relay_state.backup_active = True
-        _relay_state.log_state()
-    else:
-        print("[RELAY] WARNING: Backup power activation may have failed!")
-    return success
+    print("[RELAY] >>> ESS backup ON")
+    return set_relay("ess", True)
 
 
 def stop_backup():
-    """백업 전원 비활성화."""
-    print("[RELAY] >>> Backup power OFF")
-    success = _write_with_retry(RELAY_BACKUP, False)
-    if success:
-        _relay_state.backup_active = False
-        _relay_state.log_state()
-    else:
-        print("[RELAY] WARNING: Backup power deactivation may have failed!")
-    return success
+    print("[RELAY] >>> ESS backup OFF")
+    return set_relay("ess", False)
+
+
+def enable_source_1():
+    return set_relay("source_1", True)
+
+
+def disable_source_1():
+    return set_relay("source_1", False)
+
+
+def enable_source_2():
+    return set_relay("source_2", True)
+
+
+def disable_source_2():
+    return set_relay("source_2", False)
 
 
 def get_relay_status():
-    """현재 릴레이 상태 반환."""
     return {
+        "states": _relay_state.states.copy(),
         "main_active": _relay_state.main_active,
         "backup_active": _relay_state.backup_active,
-        "last_change_time": _relay_state.last_change_time,
+        "last_change_time": _relay_state.last_change_time.copy(),
         "is_dry_run": _relay_state.is_dry_run,
+        "pins": RELAY_PINS.copy(),
     }
 
 
 def emergency_stop():
-    """긴급 정지: 모든 릴레이 OFF."""
     print("[RELAY] !!! EMERGENCY STOP - All relays OFF !!!")
-    success_main = _write_with_retry(RELAY_MAIN, False)
-    time.sleep(RELAY_SWITCH_DELAY)
-    success_backup = _write_with_retry(RELAY_BACKUP, False)
-    
-    _relay_state.main_active = False
-    _relay_state.backup_active = False
-    _relay_state.log_state()
-    
-    return success_main and success_backup
+    ok = True
+    for name in RELAY_PINS:
+        ok = set_relay(name, False) and ok
+        time.sleep(RELAY_SWITCH_DELAY)
+    return ok
+
+
+def cleanup_relays():
+    try:
+        emergency_stop()
+        if GPIO is not None:
+            GPIO.cleanup()
+            print("[RELAY] GPIO cleanup complete")
+    except Exception as exc:
+        print(f"[RELAY] Cleanup error: {exc}")
+
+
+setup_relays()
