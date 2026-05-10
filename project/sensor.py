@@ -94,3 +94,20 @@ if __name__ == "__main__":
 
     finally:
         sensor.close()
+
+_sensor = SensorReader()
+
+def get_power_data():
+    data = _sensor.read()
+
+    if data is None:
+        return {
+            "voltage": 0.0,
+            "current": 0.0,
+            "voltage_raw": 0,
+            "current_raw": 0,
+            "fault": 3,
+            "fault_text": "DISCONNECT",
+        }
+
+    return data
