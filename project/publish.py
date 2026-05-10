@@ -2,7 +2,6 @@
 
 import json
 import time
-
 import paho.mqtt.client as mqtt
 
 from config import (
@@ -29,6 +28,7 @@ def main():
 
     while True:
         data = get_power_data()
+
         current = data["current"]
         voltage = data["voltage"]
 
@@ -37,8 +37,11 @@ def main():
             voltage=voltage,
             device=NODE_ID,
         )
-        payload["raw_current"] = data["raw_current"]
-        payload["raw_voltage"] = data["raw_voltage"]
+
+        payload["node_id"] = NODE_ID
+        payload["raw_current"] = data.get("current_raw", 0)
+        payload["raw_voltage"] = data.get("voltage_raw", 0)
+        payload["sensor_fault"] = data.get("fault_text", "UNKNOWN")
 
         now = time.time()
 
