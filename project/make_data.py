@@ -3,33 +3,36 @@ import pandas as pd
 
 data = []
 
-# F5 = A-G
-for _ in range(500):
-    A = random.randint(1100, 1500)
-    B = random.randint(150, 300)
-    C = random.randint(150, 300)
-    data.append([A, B, C, "F5"])
+def add_data(count, a_range, b_range, c_range, label):
+    for _ in range(count):
+        A = random.randint(a_range[0], a_range[1])
+        B = random.randint(b_range[0], b_range[1])
+        C = random.randint(c_range[0], c_range[1])
+        data.append([A, B, C, label])
 
-# F6 = B-G
-for _ in range(500):
-    A = random.randint(100, 250)
-    B = random.randint(1000, 1400)
-    C = random.randint(100, 250)
-    data.append([A, B, C, "F6"])
+# F1 = 3상 A-B-C 고장
+add_data(500, (1600, 2000), (1600, 2000), (1600, 2000), "F1")
 
-# F7 = C-G
-for _ in range(500):
-    A = random.randint(40, 150)
-    B = random.randint(40, 150)
-    C = random.randint(1200, 1700)
-    data.append([A, B, C, "F7"])
+# F2 = 2상 A-B 고장
+add_data(500, (1300, 1700), (1300, 1700), (50, 180), "F2")
 
-# N8 = Normal
-for _ in range(500):
-    A = random.randint(100, 180)
-    B = random.randint(100, 180)
-    C = random.randint(100, 180)
-    data.append([A, B, C, "N8"])
+# F3 = 2상 B-C 고장
+add_data(500, (40, 150), (800, 1200), (800, 1200), "F3")
+
+# F4 = 2상 C-A 고장
+add_data(500, (1000, 1400), (50, 200), (1000, 1400), "F4")
+
+# F5 = 1선 지락 A-G
+add_data(500, (1100, 1500), (150, 320), (150, 320), "F5")
+
+# F6 = 1선 지락 B-G
+add_data(500, (100, 280), (1000, 1400), (100, 280), "F6")
+
+# F7 = 1선 지락 C-G
+add_data(500, (40, 180), (40, 180), (1200, 1700), "F7")
+
+# N8 = 정상
+add_data(500, (100, 180), (100, 180), (100, 180), "N8")
 
 df = pd.DataFrame(data, columns=["A", "B", "C", "label"])
 df = df.sample(frac=1).reset_index(drop=True)
