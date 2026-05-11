@@ -14,11 +14,15 @@ result = model.predict(X)[0]
 
 print("판정 결과:", result)
 
-if result == "F5":
-    print("A-G 고장입니다.")
-elif result == "F6":
-    print("B-G 고장입니다.")
-elif result == "F7":
-    print("C-G 고장입니다.")
-elif result == "N8":
-    print("정상 상태입니다.")
+descriptions = {
+    "F1": "3상 단락 고장 A-B-C",
+    "F2": "2상 단락 고장 A-B",
+    "F3": "2상 단락 고장 B-C",
+    "F4": "2상 단락 고장 C-A",
+    "F5": "1선 지락 고장 A-G",
+    "F6": "1선 지락 고장 B-G",
+    "F7": "1선 지락 고장 C-G",
+    "N8": "정상 상태"
+}
+
+print(descriptions[result])
