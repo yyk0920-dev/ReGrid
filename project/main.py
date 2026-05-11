@@ -1,7 +1,11 @@
 # main.py - ReGrid 마이크로그리드 컨트롤러 메인 모듈
 # 정상 상태: RPi는 각자 DSP 값만 읽음
 # Fault 확정 시: peer RPi에게 FAULT_QUERY 전송 후 단독 고장 여부 판단
+# 테스트 모드:
+#   TEST_FAULT=1 python3 main.py
+#   TEST_FAULT=1 TEST_FAULT_TYPE=OVERLOAD python3 main.py
 
+import os
 import threading
 import time
 
@@ -16,6 +20,9 @@ from sensor import get_power_data
 _current_fault = "NORMAL"
 _current_data = {"voltage": 0.0, "current": 0.0}
 _state_lock = threading.Lock()
+
+TEST_FAULT = os.getenv("TEST_FAULT") == "1"
+TEST_FAULT_TYPE = os.getenv("TEST_FAULT_TYPE", "OVERLOAD")
 
 
 def get_local_state():
@@ -44,21 +51,33 @@ def handle_peer_message(message, address, client_socket=None):
             "fault_code": local["fault_code"],
             "timestamp": local["timestamp"],
         }
-        print(f"[FAULT-QUERY] from={message.get('request_from', address[0])} reply={reply}")
+
+        print(
+            f"[FAULT-QUERY] from={message.get('request_from', address[0])} "
+            f"reply_state={reply['state']} fault={reply['fault']}"
+        )
+
         if client_socket:
             send_json(client_socket, reply)
         return
 
     if msg_type == "STATUS":
-        print(f"[STATUS] peer={message.get('from', address[0])} state={message.get('state')}")
+        print(
+            f"[STATUS] peer={message.get('from', address[0])} "
+            f"state={message.get('state')}"
+        )
         return
 
     print(f"[COMM] Unknown peer message from {address[0]}: {message}")
 
 
 def query_peer_faults(local_fault):
-    """Fault 발생 시점에만 peer들에게 현재 고장 여부를 질의."""
+    """
+    Fault 발생 시점에만 peer들에게 현재 고장 여부를 질의.
+    PEER_NODES는 config.py에서 가져온 peer IP 목록.
+    """
     replies = []
+
     for peer_ip in PEER_NODES:
         query = {
             "type": "FAULT_QUERY",
@@ -67,17 +86,28 @@ def query_peer_faults(local_fault):
             "local_fault": local_fault,
             "timestamp": time.time(),
         }
+
+        print(f"[FAULT] Sending FAULT_QUERY to {peer_ip}")
         reply = request_response(query, peer_ip)
+
         if reply is None:
-            replies.append({
-                "peer_ip": peer_ip,
-                "from": peer_ip,
-                "state": "UNKNOWN",
-                "fault": "NO_RESPONSE",
-            })
+            print(f"[FAULT] No response from {peer_ip}")
+            replies.append(
+                {
+                    "peer_ip": peer_ip,
+                    "from": peer_ip,
+                    "state": "UNKNOWN",
+                    "fault": "NO_RESPONSE",
+                }
+            )
         else:
             reply["peer_ip"] = peer_ip
+            print(
+                f"[FAULT] Reply from {peer_ip}: "
+                f"state={reply.get('state')} fault={reply.get('fault')}"
+            )
             replies.append(reply)
+
     return replies
 
 
@@ -89,15 +119,34 @@ def is_single_node_fault(peer_replies):
     """
     if not peer_replies:
         return True
+
     return all(reply.get("state") == "N" for reply in peer_replies)
+
+
+def get_fault_state(detector, voltage, current):
+    """
+    실제 운전 모드:
+        DSP/sensor 기반 FaultDetector 결과 사용
+
+    테스트 모드:
+        환경변수 TEST_FAULT=1이면 강제로 Fault 발생
+    """
+    if TEST_FAULT:
+        return TEST_FAULT_TYPE
+
+    return detector.detect(voltage, current)
 
 
 def main():
     if not PEER_NODES:
         print("[WARNING] No peer nodes configured. Fault query will run standalone.")
 
+    if TEST_FAULT:
+        print(f"[TEST] TEST_FAULT enabled. Forced fault={TEST_FAULT_TYPE}")
+
     detector = FaultDetector()
     controller = PowerController()
+
     start_server_thread(on_message=handle_peer_message)
 
     previous_fault = "NORMAL"
@@ -106,7 +155,8 @@ def main():
         data = get_power_data()
         voltage = data["voltage"]
         current = data["current"]
-        fault = detector.detect(voltage, current)
+
+        fault = get_fault_state(detector, voltage, current)
 
         with _state_lock:
             global _current_fault, _current_data
@@ -116,11 +166,12 @@ def main():
         event = build_event(NODE_ID, voltage, current, fault)
         log_and_send(event, NODE_ID)
 
-        # 핵심 변경점:
+        # 핵심:
         # 정상 상태에서는 peer 통신을 하지 않는다.
         # NORMAL -> FAULT로 바뀐 순간에만 다른 RPi에게 상태를 물어본다.
         if previous_fault == "NORMAL" and fault != "NORMAL":
             print(f"[FAULT] Local fault detected at {NODE_ID}: {fault}")
+
             peer_replies = query_peer_faults(fault)
             print(f"[FAULT] Peer replies: {peer_replies}")
 
@@ -128,9 +179,13 @@ def main():
                 print(f"[FAULT] Single-node fault confirmed. Isolating {NODE_ID}")
                 controller.handle_fault(fault)
             else:
-                print("[FAULT] Not isolated as single-node fault. Manual/wider-area logic required.")
+                print(
+                    "[FAULT] Not isolated as single-node fault. "
+                    "Manual/wider-area logic required."
+                )
 
-        # 복구는 내 DSP 값이 정상으로 돌아왔을 때 수행
+        # 복구:
+        # 내 DSP 값이 정상으로 돌아왔을 때 relay restore.
         elif previous_fault != "NORMAL" and fault == "NORMAL":
             print(f"[RECOVERY] Local fault cleared at {NODE_ID}. Restoring relay.")
             controller.handle_fault("NORMAL")
