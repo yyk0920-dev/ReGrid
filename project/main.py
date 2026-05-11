@@ -1,9 +1,10 @@
 # main.py - ReGrid 마이크로그리드 컨트롤러 메인 모듈
 # 정상 상태: RPi는 각자 DSP 값만 읽음
 # Fault 확정 시: peer RPi에게 FAULT_QUERY 전송 후 단독 고장 여부 판단
-# 테스트 모드:
-#   TEST_FAULT=1 python3 main.py
-#   TEST_FAULT=1 TEST_FAULT_TYPE=OVERLOAD python3 main.py
+#
+# 테스트 모드 예시:
+#   TEST_MODE=1 TEST_VOLTAGE=220 TEST_CURRENT=1.2 python3 main.py
+#   TEST_MODE=1 TEST_FAULT=1 TEST_FAULT_TYPE=OVERLOAD TEST_VOLTAGE=220 TEST_CURRENT=5.0 python3 main.py
 
 import os
 import threading
@@ -21,8 +22,11 @@ _current_fault = "NORMAL"
 _current_data = {"voltage": 0.0, "current": 0.0}
 _state_lock = threading.Lock()
 
+TEST_MODE = os.getenv("TEST_MODE") == "1"
 TEST_FAULT = os.getenv("TEST_FAULT") == "1"
 TEST_FAULT_TYPE = os.getenv("TEST_FAULT_TYPE", "OVERLOAD")
+TEST_VOLTAGE = float(os.getenv("TEST_VOLTAGE", "220.0"))
+TEST_CURRENT = float(os.getenv("TEST_CURRENT", "1.0"))
 
 
 def get_local_state():
@@ -72,10 +76,6 @@ def handle_peer_message(message, address, client_socket=None):
 
 
 def query_peer_faults(local_fault):
-    """
-    Fault 발생 시점에만 peer들에게 현재 고장 여부를 질의.
-    PEER_NODES는 config.py에서 가져온 peer IP 목록.
-    """
     replies = []
 
     for peer_ip in PEER_NODES:
@@ -112,24 +112,33 @@ def query_peer_faults(local_fault):
 
 
 def is_single_node_fault(peer_replies):
-    """
-    내 노드만 Fault인지 판단.
-    - 모든 peer가 정상(N)이라고 응답하면 단독 고장으로 판단
-    - peer 중 F 또는 UNKNOWN이 있으면 단독 고장으로 확정하지 않음
-    """
     if not peer_replies:
         return True
 
     return all(reply.get("state") == "N" for reply in peer_replies)
 
 
-def get_fault_state(detector, voltage, current):
+def get_power_data_for_run():
     """
-    실제 운전 모드:
-        DSP/sensor 기반 FaultDetector 결과 사용
+    실제 모드:
+        sensor.get_power_data()로 실제 DSP/sensor 값 읽음
 
     테스트 모드:
-        환경변수 TEST_FAULT=1이면 강제로 Fault 발생
+        TEST_MODE=1이면 터미널 환경변수 TEST_VOLTAGE, TEST_CURRENT 값을 사용
+    """
+    if TEST_MODE:
+        return {
+            "voltage": TEST_VOLTAGE,
+            "current": TEST_CURRENT,
+        }
+
+    return get_power_data()
+
+
+def get_fault_state(detector, voltage, current):
+    """
+    TEST_FAULT=1이면 강제로 Fault 발생.
+    TEST_FAULT가 없으면 voltage/current 기반으로 FaultDetector 사용.
     """
     if TEST_FAULT:
         return TEST_FAULT_TYPE
@@ -140,6 +149,12 @@ def get_fault_state(detector, voltage, current):
 def main():
     if not PEER_NODES:
         print("[WARNING] No peer nodes configured. Fault query will run standalone.")
+
+    if TEST_MODE:
+        print(
+            f"[TEST] TEST_MODE enabled. "
+            f"voltage={TEST_VOLTAGE}V current={TEST_CURRENT}A"
+        )
 
     if TEST_FAULT:
         print(f"[TEST] TEST_FAULT enabled. Forced fault={TEST_FAULT_TYPE}")
@@ -152,7 +167,7 @@ def main():
     previous_fault = "NORMAL"
 
     while True:
-        data = get_power_data()
+        data = get_power_data_for_run()
         voltage = data["voltage"]
         current = data["current"]
 
@@ -166,9 +181,6 @@ def main():
         event = build_event(NODE_ID, voltage, current, fault)
         log_and_send(event, NODE_ID)
 
-        # 핵심:
-        # 정상 상태에서는 peer 통신을 하지 않는다.
-        # NORMAL -> FAULT로 바뀐 순간에만 다른 RPi에게 상태를 물어본다.
         if previous_fault == "NORMAL" and fault != "NORMAL":
             print(f"[FAULT] Local fault detected at {NODE_ID}: {fault}")
 
@@ -184,8 +196,6 @@ def main():
                     "Manual/wider-area logic required."
                 )
 
-        # 복구:
-        # 내 DSP 값이 정상으로 돌아왔을 때 relay restore.
         elif previous_fault != "NORMAL" and fault == "NORMAL":
             print(f"[RECOVERY] Local fault cleared at {NODE_ID}. Restoring relay.")
             controller.handle_fault("NORMAL")
