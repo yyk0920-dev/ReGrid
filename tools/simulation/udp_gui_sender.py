@@ -7,7 +7,7 @@ from tkinter import ttk
 
 # PC에서 Simulink로 보낼 때는 127.0.0.1
 # Raspberry Pi로 보낼 때는 HOST를 라즈베리파이 IP로 변경
-HOST = "192.168.137.110"
+HOST = "127.0.0.1"
 PORT = 5000
 
 current_vrms = 12.0
