@@ -61,3 +61,14 @@ MQTT_BROKER_HOST = os.getenv("REGRID_MQTT_BROKER_HOST", "localhost")
 MQTT_PORT = _env_int("REGRID_MQTT_PORT", 1883)
 MQTT_TOPIC = os.getenv("REGRID_MQTT_TOPIC", "regrid/events")
 TELEMETRY_INTERVAL = _env_float("REGRID_TELEMETRY_INTERVAL", 60.0)
+
+# Input source selection
+# sensor: read real DSP/SCI sensor values
+# env: use TEST_MODE/TEST_VOLTAGE/TEST_CURRENT values
+# udp: receive Vrms/Irms from PC Python GUI or Simulink over UDP
+INPUT_MODE = os.getenv("REGRID_INPUT_MODE", "sensor").lower()
+
+SIM_UDP_HOST = os.getenv("REGRID_SIM_UDP_HOST", "0.0.0.0")
+SIM_UDP_PORT = _env_int("REGRID_SIM_UDP_PORT", 5000)
+SIM_UDP_TIMEOUT_SEC = _env_float("REGRID_SIM_UDP_TIMEOUT_SEC", 1.0)
+SIM_UDP_BYTE_ORDER = os.getenv("REGRID_SIM_UDP_BYTE_ORDER", ">")
