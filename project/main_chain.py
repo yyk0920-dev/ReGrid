@@ -66,8 +66,9 @@ def parse_dsp_line(line):
             if key == "V":
                 v = float(value)
 
-                # V=1200처럼 정수 x100으로 온 경우 보정
-                if v > 100:
+                # V=1200 같은 정수 x100 형식일 때만 보정
+                # V=12.00 같은 소수점 형식은 그대로 사용
+                if "." not in value and abs(v) > 100:
                     v = v / 100.0
 
                 result["voltage"] = v
@@ -75,8 +76,9 @@ def parse_dsp_line(line):
             elif key == "I":
                 i = float(value)
 
-                # I=100처럼 정수 x100으로 온 경우 보정
-                if i > 50:
+                # I=100 같은 정수 x100 형식일 때만 보정
+                # I=1.00 같은 소수점 형식은 그대로 사용
+                if "." not in value and abs(i) > 50:
                     i = i / 100.0
 
                 result["current"] = i
