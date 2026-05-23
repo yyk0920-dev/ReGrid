@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ReGrid Fault Control</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+            background: linear-gradient(135deg, #111827, #1f2937);
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 28px;
+        }
+
+        .app {
+            width: min(980px, 100%);
+            padding: 32px;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.08);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+        }
+
+        .header {
+            margin-bottom: 22px;
+        }
+
+        .title {
+            font-size: 36px;
+            font-weight: 900;
+            margin: 0;
+        }
+
+        .subtitle {
+            margin-top: 8px;
+            color: #d1d5db;
+            font-size: 16px;
+        }
+
+        .status-card {
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            padding: 22px 24px;
+            border-radius: 18px;
+            margin-bottom: 22px;
+        }
+
+        .status-label {
+            color: #9ca3af;
+            font-size: 14px;
+            margin-bottom: 8px;
+            font-weight: 700;
+        }
+
+        .status-main {
+            font-size: 34px;
+            font-weight: 900;
+            line-height: 1.1;
+        }
+
+        .status-desc {
+            margin-top: 6px;
+            color: #d1d5db;
+            font-size: 18px;
+        }
+
+        .button-area {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .row {
+            display: grid;
+            gap: 16px;
+        }
+
+        .row-reset {
+            grid-template-columns: 1fr;
+        }
+
+        .row-3 {
+            grid-template-columns: repeat(3, 1fr);
+        }
+
+        .section-title {
+            margin-top: 8px;
+            color: #d1d5db;
+            font-size: 15px;
+            font-weight: 800;
+        }
+
+        button {
+            border: none;
+            border-radius: 16px;
+            padding: 20px 12px;
+            color: white;
+            cursor: pointer;
+            font-size: 17px;
+            font-weight: 800;
+            transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease;
+            box-shadow: 0 12px 26px rgba(0, 0, 0, 0.24);
+            min-height: 92px;
+        }
+
+        button:hover {
+            transform: translateY(-3px);
+            filter: brightness(1.08);
+            box-shadow: 0 18px 34px rgba(0, 0, 0, 0.30);
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        .wide-btn {
+            min-height: 82px;
+            padding: 18px 12px;
+        }
+
+        .fault-0 { background: linear-gradient(135deg, #15803d, #22c55e); }
+        .fault-1 { background: linear-gradient(135deg, #b91c1c, #ef4444); }
+        .fault-2, .fault-3, .fault-4 { background: linear-gradient(135deg, #c2410c, #f97316); }
+        .fault-5, .fault-6, .fault-7 { background: linear-gradient(135deg, #a16207, #eab308); }
+        .fault-8 { background: linear-gradient(135deg, #6d28d9, #8b5cf6); }
+        .fault-9 { background: linear-gradient(135deg, #9f1239, #e11d48); }
+
+        .code {
+            font-size: 26px;
+            display: block;
+            margin-bottom: 8px;
+        }
+
+        .desc {
+            font-size: 14px;
+            opacity: 0.95;
+            font-weight: 700;
+        }
+
+        .footer {
+            margin-top: 22px;
+            color: #9ca3af;
+            font-size: 13px;
+            text-align: right;
+            font-family: Consolas, monospace;
+        }
+
+        @media (max-width: 760px) {
+            body {
+                align-items: flex-start;
+                padding: 18px;
+            }
+
+            .app {
+                padding: 24px;
+            }
+
+            .title {
+                font-size: 30px;
+            }
+
+            .row-3 {
+                grid-template-columns: 1fr;
+            }
+
+            button {
+                min-height: 82px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div class="header">
+            <h1 class="title">ReGrid Fault Control</h1>
+            <div class="subtitle">고장 상태를 선택하세요.</div>
+        </div>
+
+        <div class="status-card">
+            <div class="status-label">현재 상태</div>
+            <div class="status-main" id="statusCode">{{ state.label }}</div>
+            <div class="status-desc" id="statusDesc">{{ state.desc }}</div>
+        </div>
+
+        <div class="button-area">
+            <div class="row row-reset">
+                <button class="fault-0 wide-btn" onclick="sendFault(0)">
+                    <span class="code">RESET</span>
+                    <span class="desc">정상상태</span>
+                </button>
+            </div>
+
+            <div class="section-title">주요 고장 / 위험 상태</div>
+            <div class="row row-3">
+                <button class="fault-1" onclick="sendFault(1)">
+                    <span class="code">F1</span>
+                    <span class="desc">3상 단락</span>
+                </button>
+
+                <button class="fault-8" onclick="sendFault(8)">
+                    <span class="code">TEMP</span>
+                    <span class="desc">온도 높음</span>
+                </button>
+
+                <button class="fault-9" onclick="sendFault(9)">
+                    <span class="code">SPARK</span>
+                    <span class="desc">스파크 감지 / 화재+소리</span>
+                </button>
+            </div>
+
+            <div class="section-title">2상 단락</div>
+            <div class="row row-3">
+                <button class="fault-2" onclick="sendFault(2)">
+                    <span class="code">F2</span>
+                    <span class="desc">A-B 단락</span>
+                </button>
+
+                <button class="fault-3" onclick="sendFault(3)">
+                    <span class="code">F3</span>
+                    <span class="desc">B-C 단락</span>
+                </button>
+
+                <button class="fault-4" onclick="sendFault(4)">
+                    <span class="code">F4</span>
+                    <span class="desc">C-A 단락</span>
+                </button>
+            </div>
+
+            <div class="section-title">지락 고장</div>
+            <div class="row row-3">
+                <button class="fault-5" onclick="sendFault(5)">
+                    <span class="code">F5</span>
+                    <span class="desc">A상 지락</span>
+                </button>
+
+                <button class="fault-6" onclick="sendFault(6)">
+                    <span class="code">F6</span>
+                    <span class="desc">B상 지락</span>
+                </button>
+
+                <button class="fault-7" onclick="sendFault(7)">
+                    <span class="code">F7</span>
+                    <span class="desc">C상 지락</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="footer">
+            UDP Target: 127.0.0.1:5000
+        </div>
+    </div>
+
+    <script>
+        async function sendFault(code) {
+            const response = await fetch(`/fault/${code}`, {
+                method: "POST"
+            });
+
+            const data = await response.json();
+
+            if (data.ok) {
+                document.getElementById("statusCode").innerText = data.label;
+                document.getElementById("statusDesc").innerText = data.desc;
+            } else {
+                alert("전송 실패");
+            }
+        }
+    </script>
+</body>
+</html>

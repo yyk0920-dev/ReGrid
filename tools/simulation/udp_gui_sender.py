@@ -1,59 +1,65 @@
 import socket
-import struct
-import threading
-import time
 import tkinter as tk
-from tkinter import ttk
 
-# PC에서 Simulink로 보낼 때는 127.0.0.1
-# Raspberry Pi로 보낼 때는 HOST를 라즈베리파이 IP로 변경
-HOST = "127.0.0.1"
-PORT = 5000
-
-current_vrms = 12.0
-current_irms = 1.0
-running = True
+UDP_IP = "127.0.0.1"
+UDP_PORT = 5000
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-
-def continuous_send():
-    while running:
-        msg = struct.pack(">ff", current_vrms, current_irms)
-        sock.sendto(msg, (HOST, PORT))
-        print("sending:", current_vrms, current_irms)
-        time.sleep(0.01)
-
-
-def update_value():
-    global current_vrms, current_irms
-
-    current_vrms = float(v_entry.get())
-    current_irms = float(i_entry.get())
-
-    status_label.config(
-        text=f"Updated: Vrms={current_vrms}, Irms={current_irms}"
-    )
-
+def send_fault(code, name):
+    msg = str(code)
+    sock.sendto(msg.encode("utf-8"), (UDP_IP, UDP_PORT))
+    status_label.config(text=f"현재 상태: {name}")
+    print(f"Sent: {msg} ({name})")
 
 root = tk.Tk()
-root.title("ReGrid UDP GUI Sender")
+root.title("ReGrid Fault GUI")
+root.geometry("650x750")
+root.resizable(False, False)
 
-ttk.Label(root, text="Vrms").pack()
-v_entry = ttk.Entry(root)
-v_entry.insert(0, "12")
-v_entry.pack()
+title_label = tk.Label(
+    root,
+    text="ReGrid 고장 제어 GUI",
+    font=("맑은 고딕", 22, "bold")
+)
+title_label.pack(pady=20)
 
-ttk.Label(root, text="Irms").pack()
-i_entry = ttk.Entry(root)
-i_entry.insert(0, "1")
-i_entry.pack()
+status_label = tk.Label(
+    root,
+    text="현재 상태: RESET / 정상상태",
+    font=("맑은 고딕", 14)
+)
+status_label.pack(pady=10)
 
-ttk.Button(root, text="Send to Simulink/RPi", command=update_value).pack(pady=10)
+button_frame = tk.Frame(root)
+button_frame.pack(pady=15)
 
-status_label = ttk.Label(root, text="Waiting...")
-status_label.pack()
+faults = [
+    (1, "F1 : 3상 단락"),
+    (2, "F2 : A-B 단락"),
+    (3, "F3 : B-C 단락"),
+    (4, "F4 : C-A 단락"),
+    (5, "F5 : A상 지락"),
+    (6, "F6 : B상 지락"),
+    (7, "F7 : C상 지락"),
+    (0, "RESET / N : 정상상태"),
+]
 
-threading.Thread(target=continuous_send, daemon=True).start()
+for idx, (code, name) in enumerate(faults):
+    row = idx // 2
+    col = idx % 2
+
+    bg_color = "#d9ead3" if code == 0 else "#f2f2f2"
+
+    btn = tk.Button(
+        button_frame,
+        text=name,
+        width=24,
+        height=3,
+        font=("맑은 고딕", 12),
+        bg=bg_color,
+        command=lambda c=code, n=name: send_fault(c, n)
+    )
+    btn.grid(row=row, column=col, padx=12, pady=10)
 
 root.mainloop()
