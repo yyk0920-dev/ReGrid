@@ -3,44 +3,9 @@ import socket
 import struct
 import math
 
-# ==========================================================
-# relay.py 함수 사용
-# ==========================================================
-
-try:
-    from relay import (
-        cut_main_power,
-        restore_main_power,
-        switch_to_backup,
-        stop_backup,
-        cleanup_relays,
-    )
-    RELAY_AVAILABLE = True
-except Exception as e:
-    RELAY_AVAILABLE = False
-    print(f"[RELAY] relay.py import failed: {e}")
-    print("[RELAY] Dry-run mode enabled")
-
-    def cut_main_power():
-        print("[DRY-RUN] cut_main_power()")
-
-    def restore_main_power():
-        print("[DRY-RUN] restore_main_power()")
-
-    def switch_to_backup():
-        print("[DRY-RUN] switch_to_backup()")
-
-    def stop_backup():
-        print("[DRY-RUN] stop_backup()")
-
-    def cleanup_relays():
-        print("[DRY-RUN] cleanup_relays()")
-
-
-# ==========================================================
-# 환경변수
-# ==========================================================
-
+# ================================
+# 환경변수 읽기
+# ================================
 def get_env(name, default=None):
     value = os.environ.get(name)
     if value is None or value == "":
@@ -52,104 +17,187 @@ NODE_ID = get_env("REGRID_NODE_ID", "node-a")
 HOST = get_env("REGRID_HOST", "0.0.0.0")
 PORT = int(get_env("REGRID_PORT", "5000"))
 
-# A -> B, B -> C 전달용
 NEXT_NODE_IP = get_env("REGRID_CHAIN_NEXT_NODE", None)
 NEXT_NODE_PORT = int(get_env("REGRID_CHAIN_NEXT_PORT", "5000"))
 
-# Simulink PC로 Circuit Breaker open/close 신호를 다시 보낼 때 사용
 SIMULINK_LAPTOP_IP = get_env("REGRID_SIMULINK_IP", None)
 SIMULINK_CONTROL_PORT = int(get_env("REGRID_SIMULINK_CONTROL_PORT", "6001"))
 
-BYTE_ORDER = get_env("REGRID_BYTE_ORDER", "big")  # big or little
-
-# Simulink가 여러 float를 보내는 경우 어느 값을 V/I로 쓸지 선택
-V_INDEX = int(get_env("REGRID_V_INDEX", "2"))
-I_INDEX = int(get_env("REGRID_I_INDEX", "4"))
-
-# 데이터 해석 방식
-# auto   : len에 따라 자동 해석
-# float  : single float 배열로 해석
-# double : double 배열로 해석
+BYTE_ORDER = get_env("REGRID_BYTE_ORDER", "big")
 DATA_MODE = get_env("REGRID_DATA_MODE", "auto")
 
-# 릴레이 실제 제어 여부
-ENABLE_RELAY = int(get_env("REGRID_ENABLE_RELAY", "1"))
+ENABLE_SIMULINK_CONTROL = int(get_env("REGRID_ENABLE_SIMULINK_CONTROL", "1"))
+DEBUG = int(get_env("REGRID_DEBUG", "1"))
 
-# Simulink Circuit Breaker로 0.0/1.0 신호를 다시 보낼지 여부
-ENABLE_SIMULINK_CONTROL = int(get_env("REGRID_ENABLE_SIMULINK_CONTROL", "0"))
+# 1이면 fault가 바뀔 때만 Simulink로 제어 신호 전송
+# 0이면 매 패킷마다 Simulink로 제어 신호 전송
+# Simulink에서 보기에는 0 추천
+SEND_ON_CHANGE_ONLY = int(get_env("REGRID_SEND_ON_CHANGE_ONLY", "0"))
 
-# 디버그 출력 여부
-DEBUG = int(get_env("REGRID_DEBUG", "0"))
-
-# 고장 기준
-CURRENT_THRESHOLD = float(get_env("REGRID_CURRENT_THRESHOLD", "5.0"))
-DISCONNECT_THRESHOLD = float(get_env("REGRID_DISCONNECT_THRESHOLD", "0.05"))
-UNDERVOLTAGE_THRESHOLD = float(get_env("REGRID_UNDERVOLTAGE_THRESHOLD", "10.50"))
-OVERVOLTAGE_THRESHOLD = float(get_env("REGRID_OVERVOLTAGE_THRESHOLD", "13.80"))
+# ================================
+# 고장 기준값
+# ================================
+CURRENT_THRESHOLD = float(get_env("REGRID_CURRENT_THRESHOLD", "6.0"))
+TEMP_THRESHOLD = float(get_env("REGRID_TEMP_THRESHOLD", "80.0"))
+SOUND_THRESHOLD = float(get_env("REGRID_SOUND_THRESHOLD", "80.0"))
 
 last_fault = None
 
 
-# ==========================================================
-# Fault 판단
-# ==========================================================
-
-def classify_fault(voltage, current):
-    """
-    fault code:
-    0 = NORMAL
-    1 = UNDERVOLTAGE
-    2 = OVERLOAD
-    3 = DISCONNECT
-    4 = OVERVOLTAGE
-    """
-
-    if not math.isfinite(voltage) or not math.isfinite(current):
-        return 3
-
-    voltage_abs = abs(voltage)
-    current_abs = abs(current)
-
-    if current_abs < DISCONNECT_THRESHOLD:
-        return 3
-
-    if current_abs > CURRENT_THRESHOLD:
-        return 2
-
-    if voltage_abs < UNDERVOLTAGE_THRESHOLD:
-        return 1
-
-    if voltage_abs > OVERVOLTAGE_THRESHOLD:
-        return 4
-
-    return 0
-
-
+# ================================
+# Fault 이름
+# ================================
 def get_fault_name(fault):
     names = {
         0: "NORMAL",
-        1: "UNDERVOLTAGE",
-        2: "OVERLOAD",
-        3: "DISCONNECT",
-        4: "OVERVOLTAGE",
+        2: "OVERCURRENT",
+        5: "HIGH_TEMP",
+        6: "SPARK_SOUND",
+        9: "MULTI_FAULT",
     }
     return names.get(fault, "UNKNOWN")
 
 
-# ==========================================================
-# Simulink Circuit Breaker 제어 신호 송신
-# ==========================================================
+# ================================
+# UDP 데이터 해석
+# ================================
+def unpack_float_array(data):
+    count = len(data) // 4
+    prefix = ">" if BYTE_ORDER == "big" else "<"
+    fmt = prefix + ("f" * count)
+    return struct.unpack(fmt, data[:count * 4])
 
+
+def unpack_double_array(data):
+    count = len(data) // 8
+    prefix = ">" if BYTE_ORDER == "big" else "<"
+    fmt = prefix + ("d" * count)
+    return struct.unpack(fmt, data[:count * 8])
+
+
+def decode_udp_values(data):
+    """
+    Simulink에서 오는 값 해석.
+
+    권장 Simulink 설정:
+    [Ia, Ib, Ic, Temp, Sound]
+    Data Type Conversion: single
+    Mux input count: 5
+    UDP Send → A RPi: 20 bytes
+
+    len=20이면 single 5개
+    len=40이면 double 5개
+    """
+    if len(data) < 4:
+        raise ValueError(f"packet too short: len={len(data)}")
+
+    if DATA_MODE == "float":
+        return unpack_float_array(data)
+
+    if DATA_MODE == "double":
+        return unpack_double_array(data)
+
+    # auto 모드
+    if len(data) == 20:
+        return unpack_float_array(data)
+
+    if len(data) == 40:
+        return unpack_double_array(data)
+
+    if len(data) % 4 == 0:
+        return unpack_float_array(data)
+
+    if len(data) % 8 == 0:
+        return unpack_double_array(data)
+
+    raise ValueError(f"unsupported packet length: {len(data)}")
+
+
+# ================================
+# 5개 값 기준 고장 판단
+# values = [Ia, Ib, Ic, Temperature, Sound]
+# ================================
+def classify_multi_fault(values):
+    if len(values) < 5:
+        raise ValueError(
+            f"need 5 values: [Ia, Ib, Ic, Temperature, Sound], got {len(values)}"
+        )
+
+    ia = float(values[0])
+    ib = float(values[1])
+    ic = float(values[2])
+    temperature = float(values[3])
+    sound = float(values[4])
+
+    all_values = [ia, ib, ic, temperature, sound]
+
+    if not all(math.isfinite(v) for v in all_values):
+        return {
+            "fault": 9,
+            "fault_name": "MULTI_FAULT",
+            "ia": ia,
+            "ib": ib,
+            "ic": ic,
+            "temperature": temperature,
+            "sound": sound,
+            "max_current": 0.0,
+            "overcurrent": False,
+            "high_temp": False,
+            "spark_sound": False,
+            "reason": "NaN_or_inf_detected",
+        }
+
+    max_current = max(abs(ia), abs(ib), abs(ic))
+
+    overcurrent = max_current > CURRENT_THRESHOLD
+    high_temp = temperature > TEMP_THRESHOLD
+    spark_sound = sound > SOUND_THRESHOLD
+
+    reason_list = []
+
+    if overcurrent:
+        reason_list.append("OVERCURRENT")
+
+    if high_temp:
+        reason_list.append("HIGH_TEMP")
+
+    if spark_sound:
+        reason_list.append("SPARK_SOUND")
+
+    if len(reason_list) >= 2:
+        fault = 9
+    elif overcurrent:
+        fault = 2
+    elif high_temp:
+        fault = 5
+    elif spark_sound:
+        fault = 6
+    else:
+        fault = 0
+        reason_list.append("NORMAL")
+
+    return {
+        "fault": fault,
+        "fault_name": get_fault_name(fault),
+        "ia": ia,
+        "ib": ib,
+        "ic": ic,
+        "temperature": temperature,
+        "sound": sound,
+        "max_current": max_current,
+        "overcurrent": overcurrent,
+        "high_temp": high_temp,
+        "spark_sound": spark_sound,
+        "reason": "+".join(reason_list),
+    }
+
+
+# ================================
+# Simulink로 차단기 제어 신호 전송
+# 정상: 1.0
+# 고장: 0.0
+# ================================
 def send_breaker_signal_to_simulink(closed):
-    """
-    Simulink Circuit Breaker 제어용 UDP 송신.
-
-    closed=True  -> 1.0 전송, 회로 닫힘
-    closed=False -> 0.0 전송, 회로 열림
-
-    Simulink UDP Receive 쪽은 double 1개를 받도록 맞추는 것을 추천.
-    """
-
     if not ENABLE_SIMULINK_CONTROL:
         return
 
@@ -159,6 +207,10 @@ def send_breaker_signal_to_simulink(closed):
 
     value = 1.0 if closed else 0.0
 
+    # Simulink UDP Receive 설정:
+    # Data type: double
+    # Data size: [1]
+    # Byte order: Big Endian
     fmt = ">d" if BYTE_ORDER == "big" else "<d"
     data = struct.pack(fmt, value)
 
@@ -176,164 +228,47 @@ def send_breaker_signal_to_simulink(closed):
         sock.close()
 
 
-# ==========================================================
-# 릴레이 제어
-# ==========================================================
-
-def control_relay_by_fault(fault):
-    """
-    fault == 0:
-        메인 릴레이 복구, ESS OFF, Simulink breaker close
-
-    fault != 0:
-        메인 릴레이 차단, ESS ON, Simulink breaker open
-    """
-
+# ================================
+# Fault 상태에 따라 Simulink 릴레이/차단기 제어
+# ================================
+def control_by_fault(fault):
     global last_fault
 
-    if last_fault == fault:
-        return
-
+    changed = last_fault != fault
     last_fault = fault
 
+    if SEND_ON_CHANGE_ONLY and not changed:
+        return
+
     if fault == 0:
-        print("[CONTROL] NORMAL -> restore main power, stop backup")
-
-        if ENABLE_RELAY:
-            restore_main_power()
-            stop_backup()
-
+        if changed:
+            print("[CONTROL] NORMAL -> Simulink breaker CLOSE")
         send_breaker_signal_to_simulink(closed=True)
-
     else:
-        print(f"[CONTROL] FAULT -> cut main power, switch to backup | fault={fault}")
-
-        if ENABLE_RELAY:
-            cut_main_power()
-            switch_to_backup()
-
+        if changed:
+            print(
+                f"[CONTROL] FAULT -> Simulink breaker OPEN | "
+                f"fault={fault}({get_fault_name(fault)})"
+            )
         send_breaker_signal_to_simulink(closed=False)
 
 
-# ==========================================================
-# UDP 데이터 해석
-# ==========================================================
-
-def unpack_float_array(data):
-    float_count = len(data) // 4
-    usable_len = float_count * 4
-
-    prefix = ">" if BYTE_ORDER == "big" else "<"
-    fmt = prefix + ("f" * float_count)
-
-    values = struct.unpack(fmt, data[:usable_len])
-    return values
-
-
-def unpack_double_array(data):
-    double_count = len(data) // 8
-    usable_len = double_count * 8
-
-    prefix = ">" if BYTE_ORDER == "big" else "<"
-    fmt = prefix + ("d" * double_count)
-
-    values = struct.unpack(fmt, data[:usable_len])
-    return values
-
-
-def decode_udp_values(data):
-    """
-    지원 형식:
-
-    1) Simulink single 배열
-       예: single [V, I] -> len=8
-       예: single 10개 -> len=40
-
-    2) Simulink double 배열
-       예: double current 하나 -> len=8
-       예: double [V, I] -> len=16
-
-    DATA_MODE=auto일 때:
-       - len=40이면 float 배열로 해석
-       - len=16이면 double [V,I]로 해석
-       - len=8이면 우선 float [V,I]로 해석하되 값이 이상하면 double current로도 볼 수 있음
-    """
-
-    if len(data) < 8:
-        raise ValueError(f"packet too short: len={len(data)}")
-
-    values = None
-
-    if DATA_MODE == "float":
-        values = unpack_float_array(data)
-
-    elif DATA_MODE == "double":
-        values = unpack_double_array(data)
-
-    else:
-        # auto mode
-        if len(data) == 40:
-            values = unpack_float_array(data)
-
-        elif len(data) == 16:
-            values = unpack_double_array(data)
-
-        elif len(data) == 8:
-            # 기본은 single [V,I]
-            values = unpack_float_array(data)
-
-        else:
-            # 애매하면 float 배열로 우선 해석
-            if len(data) % 4 == 0:
-                values = unpack_float_array(data)
-            elif len(data) % 8 == 0:
-                values = unpack_double_array(data)
-            else:
-                raise ValueError(f"unsupported packet length: {len(data)}")
-
-    if not values:
-        raise ValueError("no values decoded")
-
-    # double current 하나만 들어온 경우
-    if len(values) == 1:
-        voltage = 12.0
-        current = float(values[0])
-        return voltage, current, values
-
-    # single [V, I] 또는 double [V, I]만 들어온 경우
-    if len(values) == 2:
-        voltage = float(values[0])
-        current = float(values[1])
-        return voltage, current, values
-
-    if V_INDEX >= len(values) or I_INDEX >= len(values):
-        raise ValueError(
-            f"index out of range. len(values)={len(values)}, "
-            f"V_INDEX={V_INDEX}, I_INDEX={I_INDEX}"
-        )
-
-    voltage = float(values[V_INDEX])
-    current = float(values[I_INDEX])
-
-    return voltage, current, values
-
-
-# ==========================================================
-# 다음 노드로 전달
-# ==========================================================
-
-def send_values_to_next_node(voltage, current):
-    """
-    다음 RPi로 V, I만 전달.
-    전달 형식은 single [V, I], 총 8바이트.
-    """
-
+# ================================
+# 다음 노드로 5개 값 그대로 forwarding
+# ================================
+def send_values_to_next_node(values):
     if not NEXT_NODE_IP:
-        print(f"[{NODE_ID}] No next node. Stop forwarding.")
         return
 
-    fmt = ">ff" if BYTE_ORDER == "big" else "<ff"
-    data = struct.pack(fmt, float(abs(voltage)), float(abs(current)))
+    if len(values) < 5:
+        print("[CHAIN] Not enough values to forward.")
+        return
+
+    send_values = values[:5]
+
+    # 체인 전달은 single 5개로 통일
+    fmt = ">fffff" if BYTE_ORDER == "big" else "<fffff"
+    data = struct.pack(fmt, *[float(v) for v in send_values])
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -341,7 +276,8 @@ def send_values_to_next_node(voltage, current):
         sock.sendto(data, (NEXT_NODE_IP, NEXT_NODE_PORT))
         print(
             f"[CHAIN] {NODE_ID} -> {NEXT_NODE_IP}:{NEXT_NODE_PORT} | "
-            f"V={abs(voltage):.2f}, I={abs(current):.2f}"
+            f"Ia={send_values[0]:.2f}, Ib={send_values[1]:.2f}, Ic={send_values[2]:.2f}, "
+            f"Temp={send_values[3]:.2f}, Sound={send_values[4]:.2f}"
         )
     except Exception as e:
         print(f"[CHAIN ERROR] failed to send to {NEXT_NODE_IP}:{NEXT_NODE_PORT} | {e}")
@@ -349,64 +285,15 @@ def send_values_to_next_node(voltage, current):
         sock.close()
 
 
-# ==========================================================
+# ================================
 # 메인 수신 루프
-# ==========================================================
-
+# ================================
 def receive_values():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((HOST, PORT))
 
-    print(f"[{NODE_ID}] UDP listening on {HOST}:{PORT}")
-    print(f"[{NODE_ID}] byte_order={BYTE_ORDER}")
-    print(f"[{NODE_ID}] data_mode={DATA_MODE}")
-    print(f"[{NODE_ID}] V_INDEX={V_INDEX}, I_INDEX={I_INDEX}")
-    print(f"[{NODE_ID}] relay_available={RELAY_AVAILABLE}, enable_relay={ENABLE_RELAY}")
-    print(f"[{NODE_ID}] enable_simulink_control={ENABLE_SIMULINK_CONTROL}")
-    print(f"[{NODE_ID}] debug={DEBUG}")
-
-    if ENABLE_RELAY:
-        print("[INIT] restore main power, stop backup")
-        restore_main_power()
-        stop_backup()
-
-    while True:
-        data, addr = sock.recvfrom(4096)
-
-        try:
-            voltage, current, values = decode_udp_values(data)
-        except Exception as e:
-            print(f"[ERROR] decode failed from {addr}: {e}")
-            if DEBUG:
-                print(f"[DEBUG] len={len(data)}, raw={data.hex()}")
-            continue
-
-        if DEBUG:
-            preview = ", ".join([f"{v:.3f}" for v in values[:12]])
-            print(f"[DEBUG] from {addr} | len={len(data)} | raw={data[:40].hex()}")
-            print(f"[DEBUG] decoded values: [{preview}]")
-
-        voltage = abs(voltage)
-        current = abs(current)
-
-        fault = classify_fault(voltage, current)
-        fault_name = get_fault_name(fault)
-
-        print(
-            f"[{NODE_ID}] from {addr} | "
-            f"V={voltage:.2f} V, I={current:.2f} A, "
-            f"FAULT={fault}({fault_name})"
-        )
-
-        control_relay_by_fault(fault)
-
-        if NODE_ID in ("node-a", "node-b"):
-            send_values_to_next_node(voltage, current)
-
-
-def main():
     print("===================================")
-    print("ReGrid UDP VI Receiver / Relay / Forwarder")
+    print("ReGrid Multi-Fault Receiver")
     print(f"NODE_ID={NODE_ID}")
     print(f"HOST={HOST}")
     print(f"PORT={PORT}")
@@ -416,19 +303,63 @@ def main():
     print(f"SIMULINK_CONTROL_PORT={SIMULINK_CONTROL_PORT}")
     print(f"BYTE_ORDER={BYTE_ORDER}")
     print(f"DATA_MODE={DATA_MODE}")
-    print(f"V_INDEX={V_INDEX}")
-    print(f"I_INDEX={I_INDEX}")
-    print(f"ENABLE_RELAY={ENABLE_RELAY}")
+    print(f"CURRENT_THRESHOLD={CURRENT_THRESHOLD}")
+    print(f"TEMP_THRESHOLD={TEMP_THRESHOLD}")
+    print(f"SOUND_THRESHOLD={SOUND_THRESHOLD}")
     print(f"ENABLE_SIMULINK_CONTROL={ENABLE_SIMULINK_CONTROL}")
+    print(f"SEND_ON_CHANGE_ONLY={SEND_ON_CHANGE_ONLY}")
     print(f"DEBUG={DEBUG}")
+    print("Expected packet: [Ia, Ib, Ic, Temperature, Sound]")
+    print("Recommended packet length: 20 bytes = single 5 values")
     print("===================================")
 
+    while True:
+        data, addr = sock.recvfrom(4096)
+
+        try:
+            values = decode_udp_values(data)
+        except Exception as e:
+            print(f"[ERROR] decode failed from {addr}: {e}")
+            if DEBUG:
+                print(f"[DEBUG] len={len(data)}, raw={data.hex()}")
+            continue
+
+        if DEBUG:
+            preview = ", ".join([f"{v:.3f}" for v in values[:10]])
+            print(f"[DEBUG] from {addr} | len={len(data)} | raw={data[:60].hex()}")
+            print(f"[DEBUG] decoded values: [{preview}]")
+
+        try:
+            result = classify_multi_fault(values)
+        except Exception as e:
+            print(f"[ERROR] classify failed from {addr}: {e}")
+            continue
+
+        fault = result["fault"]
+
+        print(
+            f"[{NODE_ID}] from {addr} | "
+            f"Ia={result['ia']:.2f} A, "
+            f"Ib={result['ib']:.2f} A, "
+            f"Ic={result['ic']:.2f} A, "
+            f"MAX_I={result['max_current']:.2f} A, "
+            f"TEMP={result['temperature']:.2f}, "
+            f"SOUND={result['sound']:.2f}, "
+            f"FAULT={fault}({result['fault_name']}), "
+            f"REASON={result['reason']}"
+        )
+
+        control_by_fault(fault)
+
+        if NODE_ID in ("node-a", "node-b"):
+            send_values_to_next_node(values)
+
+
+def main():
     try:
         receive_values()
     except KeyboardInterrupt:
         print("\n[EXIT] KeyboardInterrupt")
-    finally:
-        cleanup_relays()
 
 
 if __name__ == "__main__":
