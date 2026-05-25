@@ -1,7 +1,6 @@
 import os
 import socket
 import struct
-import time
 
 
 def get_env(name, default=None):
@@ -33,14 +32,15 @@ def classify_fault(voltage, current):
     return 0       # NORMAL
 
 
-def make_message(voltage, current, fault=0):
-    return {
-        "voltage": float(voltage),
-        "current": float(current),
-        "fault": int(fault),
-        "source": NODE_ID,
-        "timestamp": time.time(),
+def get_fault_name(fault):
+    names = {
+        0: "NORMAL",
+        1: "UNDERVOLTAGE",
+        2: "OVERLOAD",
+        3: "DISCONNECT",
+        4: "OVERVOLTAGE",
     }
+    return names.get(fault, "UNKNOWN")
 
 
 def send_values_to_next_node(voltage, current):
@@ -50,6 +50,7 @@ def send_values_to_next_node(voltage, current):
     """
 
     if not NEXT_NODE_IP:
+        print(f"[{NODE_ID}] No next node. Stop forwarding.")
         return
 
     fmt = ">ff" if BYTE_ORDER == "big" else "<ff"
@@ -59,16 +60,20 @@ def send_values_to_next_node(voltage, current):
     sock.sendto(data, (NEXT_NODE_IP, NEXT_NODE_PORT))
     sock.close()
 
-    print(f"[CHAIN] Sent V={voltage:.2f}, I={current:.2f} to {NEXT_NODE_IP}:{NEXT_NODE_PORT}")
+    print(
+        f"[CHAIN] {NODE_ID} -> {NEXT_NODE_IP}:{NEXT_NODE_PORT} | "
+        f"V={voltage:.2f}, I={current:.2f}"
+    )
 
 
 def receive_values():
     """
-    Simulink UDP Send에서 보내는 single [V, I] 수신.
+    Simulink UDP Send 또는 이전 RPi에서 보내는 single [V, I] 수신.
+
     Simulink 설정:
     - Source Data Type: single
     - Data size: [1, 2]
-    - Byte order: big-endian이면 >ff
+    - Byte order: big-endian이면 REGRID_BYTE_ORDER=big
     """
 
     fmt = ">ff" if BYTE_ORDER == "big" else "<ff"
@@ -82,6 +87,8 @@ def receive_values():
     while True:
         data, addr = sock.recvfrom(1024)
 
+        print(f"[DEBUG] from {addr} | len={len(data)} | raw={data[:32].hex()}")
+
         if len(data) < 8:
             print(f"[WARN] short packet from {addr}: {data}")
             continue
@@ -93,23 +100,29 @@ def receive_values():
             continue
 
         fault = classify_fault(voltage, current)
+        fault_name = get_fault_name(fault)
 
         print(
             f"[{NODE_ID}] from {addr} | "
-            f"V={voltage:.2f} V, I={current:.2f} A, FAULT={fault}"
+            f"V={voltage:.2f} V, I={current:.2f} A, "
+            f"FAULT={fault}({fault_name})"
         )
 
         # 여기서 릴레이/LED 제어 넣으면 됨
         # fault == 0 → 정상
         # fault != 0 → 고장
 
-        if NODE_ID == "node-b":
+        # 체인 전달:
+        # node-a는 B로 전달
+        # node-b는 C로 전달
+        # node-c는 마지막이라 전달 안 함
+        if NODE_ID in ("node-a", "node-b"):
             send_values_to_next_node(voltage, current)
 
 
 def main():
     print("===================================")
-    print("ReGrid UDP VI Receiver")
+    print("ReGrid UDP VI Receiver / Forwarder")
     print(f"NODE_ID={NODE_ID}")
     print(f"HOST={HOST}")
     print(f"PORT={PORT}")
