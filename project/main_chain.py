@@ -1,9 +1,7 @@
 import os
-import json
 import socket
+import struct
 import time
-
-from dsp_bridge import DSPBridge
 
 
 def get_env(name, default=None):
@@ -13,287 +11,114 @@ def get_env(name, default=None):
     return value
 
 
-NODE_ID = get_env("REGRID_NODE_ID", "node-a")
+NODE_ID = get_env("REGRID_NODE_ID", "node-b")
 HOST = get_env("REGRID_HOST", "0.0.0.0")
 PORT = int(get_env("REGRID_PORT", "5000"))
 
 NEXT_NODE_IP = get_env("REGRID_CHAIN_NEXT_NODE", None)
 NEXT_NODE_PORT = int(get_env("REGRID_CHAIN_NEXT_PORT", "5000"))
 
-SERIAL_PORT = get_env("REGRID_SERIAL_PORT", "/dev/serial0")
-SERIAL_BAUD = int(get_env("REGRID_SERIAL_BAUD", "115200"))
-
-INPUT_MODE = get_env("REGRID_CHAIN_INPUT_MODE", "sensor")
-TEST_VOLTAGE = float(get_env("TEST_VOLTAGE", "12.0"))
-TEST_CURRENT = float(get_env("TEST_CURRENT", "1.0"))
+BYTE_ORDER = get_env("REGRID_BYTE_ORDER", "big")  # big or little
 
 
-def parse_dsp_line(line):
-    """
-    DSP 문자열 파싱.
-
-    가능한 형식:
-    V=12.00,I=1.00,FAULT=0
-    NODE_B,V=12.00,I=1.00,FAULT=0
-    V=1200,I=100,FAULT=0
-
-    반환:
-    {
-        "voltage": 12.0,
-        "current": 1.0,
-        "fault": 0
-    }
-    """
-
-    if not line:
-        return None
-
-    parts = line.strip().split(",")
-
-    result = {}
-
-    for part in parts:
-        part = part.strip()
-
-        if "=" not in part:
-            continue
-
-        key, value = part.split("=", 1)
-        key = key.strip().upper()
-        value = value.strip()
-
-        try:
-            if key == "V":
-                v = float(value)
-
-                # V=1200 같은 정수 x100 형식일 때만 보정
-                # V=12.00 같은 소수점 형식은 그대로 사용
-                if "." not in value and abs(v) > 100:
-                    v = v / 100.0
-
-                result["voltage"] = v
-
-            elif key == "I":
-                i = float(value)
-
-                # I=100 같은 정수 x100 형식일 때만 보정
-                # I=1.00 같은 소수점 형식은 그대로 사용
-                if "." not in value and abs(i) > 50:
-                    i = i / 100.0
-
-                result["current"] = i
-
-            elif key == "FAULT":
-                result["fault"] = int(float(value))
-
-        except ValueError:
-            pass
-
-    if "voltage" not in result or "current" not in result:
-        return None
-
-    if "fault" not in result:
-        result["fault"] = 0
-
-    return result
+def classify_fault(voltage, current):
+    if current < 0.05:
+        return 3   # DISCONNECT
+    elif current > 5.00:
+        return 2   # OVERLOAD
+    elif voltage < 10.50:
+        return 1   # UNDERVOLTAGE
+    elif voltage > 13.80:
+        return 4   # OVERVOLTAGE
+    return 0       # NORMAL
 
 
-def make_message(voltage, current, fault=0, source=None):
+def make_message(voltage, current, fault=0):
     return {
-        "type": "VI_DATA",
-        "source": source or NODE_ID,
         "voltage": float(voltage),
         "current": float(current),
         "fault": int(fault),
+        "source": NODE_ID,
         "timestamp": time.time(),
     }
 
 
-def send_to_next_node(message):
+def send_values_to_next_node(voltage, current):
+    """
+    다음 RPi로 V, I 값만 UDP 전송.
+    Simulink UDP Send와 같은 형식: single [V, I]
+    """
+
     if not NEXT_NODE_IP:
-        print("[CHAIN] No next node. Stop forwarding.")
         return
 
+    fmt = ">ff" if BYTE_ORDER == "big" else "<ff"
+    data = struct.pack(fmt, float(voltage), float(current))
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    data = json.dumps(message).encode("utf-8")
     sock.sendto(data, (NEXT_NODE_IP, NEXT_NODE_PORT))
     sock.close()
 
-    print(f"[CHAIN] Sent to next node {NEXT_NODE_IP}:{NEXT_NODE_PORT} -> {message}")
+    print(f"[CHAIN] Sent V={voltage:.2f}, I={current:.2f} to {NEXT_NODE_IP}:{NEXT_NODE_PORT}")
 
 
-def receive_message():
+def receive_values():
+    """
+    Simulink UDP Send에서 보내는 single [V, I] 수신.
+    Simulink 설정:
+    - Source Data Type: single
+    - Data size: [1, 2]
+    - Byte order: big-endian이면 >ff
+    """
+
+    fmt = ">ff" if BYTE_ORDER == "big" else "<ff"
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((HOST, PORT))
 
-    print(f"[CHAIN] {NODE_ID} waiting UDP on {HOST}:{PORT}")
+    print(f"[{NODE_ID}] UDP listening on {HOST}:{PORT}")
+    print(f"[{NODE_ID}] Expecting single [V, I], byte_order={BYTE_ORDER}")
 
     while True:
-        data, addr = sock.recvfrom(4096)
+        data, addr = sock.recvfrom(1024)
+
+        if len(data) < 8:
+            print(f"[WARN] short packet from {addr}: {data}")
+            continue
 
         try:
-            message = json.loads(data.decode("utf-8"))
+            voltage, current = struct.unpack(fmt, data[:8])
         except Exception as e:
-            print(f"[ERROR] Invalid JSON from {addr}: {e}")
+            print(f"[ERROR] unpack failed from {addr}: {e}, raw={data}")
             continue
 
-        print(f"[CHAIN] Received from {addr}: {message}")
-        return message
+        fault = classify_fault(voltage, current)
 
-
-def run_node_a():
-    """
-    A 노드:
-    DSP A에서 V/I/FAULT를 읽고 B 노드로 전달.
-    """
-
-    print("[START] node-a mode")
-    print(f"[INFO] INPUT_MODE={INPUT_MODE}")
-
-    dsp = DSPBridge(SERIAL_PORT, SERIAL_BAUD)
-
-    while True:
-        if INPUT_MODE == "test":
-            voltage = TEST_VOLTAGE
-            current = TEST_CURRENT
-            fault = 0
-
-            message = make_message(voltage, current, fault, source="node-a")
-            send_to_next_node(message)
-
-            time.sleep(1.0)
-            continue
-
-        line = dsp.read_response()
-
-        if not line:
-            continue
-
-        print(f"[DSP A] {line}")
-
-        parsed = parse_dsp_line(line)
-
-        if not parsed:
-            print("[WARN] DSP line parse failed")
-            continue
-
-        message = make_message(
-            parsed["voltage"],
-            parsed["current"],
-            parsed["fault"],
-            source="node-a"
+        print(
+            f"[{NODE_ID}] from {addr} | "
+            f"V={voltage:.2f} V, I={current:.2f} A, FAULT={fault}"
         )
 
-        send_to_next_node(message)
+        # 여기서 릴레이/LED 제어 넣으면 됨
+        # fault == 0 → 정상
+        # fault != 0 → 고장
 
-
-def run_middle_node():
-    """
-    B 노드:
-    A에서 받은 V/I를 DSP B로 전달.
-    DSP B 응답을 읽고 C 노드로 전달.
-    """
-
-    print(f"[START] {NODE_ID} middle mode")
-
-    dsp = DSPBridge(SERIAL_PORT, SERIAL_BAUD)
-
-    while True:
-        message = receive_message()
-
-        if message.get("type") != "VI_DATA":
-            print("[WARN] Unknown message type")
-            continue
-
-        voltage = float(message["voltage"])
-        current = float(message["current"])
-
-        print(f"[{NODE_ID}] Input V={voltage}, I={current}")
-
-        dsp_response = dsp.process_vi(voltage, current)
-
-        if dsp_response:
-            print(f"[DSP {NODE_ID}] {dsp_response}")
-            parsed = parse_dsp_line(dsp_response)
-        else:
-            print(f"[WARN] No DSP response from {NODE_ID}")
-            parsed = None
-
-        if parsed:
-            next_message = make_message(
-                parsed["voltage"],
-                parsed["current"],
-                parsed["fault"],
-                source=NODE_ID
-            )
-        else:
-            # DSP 응답이 없으면 받은 값을 그대로 다음 노드로 전달
-            next_message = make_message(
-                voltage,
-                current,
-                message.get("fault", 0),
-                source=NODE_ID
-            )
-
-        send_to_next_node(next_message)
-
-
-def run_last_node():
-    """
-    C 노드:
-    B에서 받은 V/I를 DSP C로 전달하고 최종 결과 출력.
-    """
-
-    print(f"[START] {NODE_ID} last mode")
-
-    dsp = DSPBridge(SERIAL_PORT, SERIAL_BAUD)
-
-    while True:
-        message = receive_message()
-
-        if message.get("type") != "VI_DATA":
-            print("[WARN] Unknown message type")
-            continue
-
-        voltage = float(message["voltage"])
-        current = float(message["current"])
-
-        print(f"[{NODE_ID}] Final input V={voltage}, I={current}")
-
-        dsp_response = dsp.process_vi(voltage, current)
-
-        if dsp_response:
-            print(f"[DSP {NODE_ID}] {dsp_response}")
-            parsed = parse_dsp_line(dsp_response)
-
-            if parsed:
-                print(
-                    f"[FINAL] V={parsed['voltage']:.2f}, "
-                    f"I={parsed['current']:.2f}, "
-                    f"FAULT={parsed['fault']}"
-                )
-        else:
-            print(f"[WARN] No DSP response from {NODE_ID}")
+        if NODE_ID == "node-b":
+            send_values_to_next_node(voltage, current)
 
 
 def main():
     print("===================================")
-    print("ReGrid Chain Mode")
+    print("ReGrid UDP VI Receiver")
     print(f"NODE_ID={NODE_ID}")
     print(f"HOST={HOST}")
     print(f"PORT={PORT}")
     print(f"NEXT_NODE_IP={NEXT_NODE_IP}")
-    print(f"SERIAL_PORT={SERIAL_PORT}")
+    print(f"NEXT_NODE_PORT={NEXT_NODE_PORT}")
+    print(f"BYTE_ORDER={BYTE_ORDER}")
     print("===================================")
 
-    if NODE_ID == "node-a":
-        run_node_a()
-    elif NODE_ID == "node-b":
-        run_middle_node()
-    elif NODE_ID == "node-c":
-        run_last_node()
-    else:
-        print(f"[ERROR] Unknown NODE_ID: {NODE_ID}")
+    receive_values()
 
 
 if __name__ == "__main__":
