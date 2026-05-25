@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ReGrid V/I Control</title>
+    <title>ReGrid V/I + Vision AI Control</title>
     <style>
         * {
             box-sizing: border-box;
@@ -17,12 +17,12 @@
             color: white;
             display: flex;
             justify-content: center;
-            align-items: center;
+            align-items: flex-start;
             padding: 28px;
         }
 
         .app {
-            width: min(980px, 100%);
+            width: min(1180px, 100%);
             padding: 32px;
             border-radius: 20px;
             background: rgba(255, 255, 255, 0.08);
@@ -46,7 +46,15 @@
             font-size: 16px;
         }
 
-        .status-card {
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 420px;
+            gap: 22px;
+            align-items: start;
+        }
+
+        .status-card,
+        .video-card {
             background: rgba(255, 255, 255, 0.12);
             border: 1px solid rgba(255, 255, 255, 0.18);
             padding: 22px 24px;
@@ -78,6 +86,42 @@
             color: #e5e7eb;
             font-size: 18px;
             font-family: Consolas, monospace;
+        }
+
+        .ai-status {
+            margin-top: 10px;
+            color: #facc15;
+            font-size: 16px;
+            font-weight: 800;
+        }
+
+        .video-title {
+            font-size: 22px;
+            font-weight: 900;
+            margin-bottom: 12px;
+        }
+
+        .video-box {
+            width: 100%;
+            aspect-ratio: 4 / 3;
+            background: #020617;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .video-box img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .video-desc {
+            margin-top: 12px;
+            color: #d1d5db;
+            font-size: 14px;
+            line-height: 1.5;
         }
 
         .button-area {
@@ -170,6 +214,7 @@
             justify-content: center;
             align-items: center;
             padding: 20px;
+            z-index: 10;
         }
 
         .modal {
@@ -225,6 +270,12 @@
             min-height: 58px;
         }
 
+        @media (max-width: 1000px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
         @media (max-width: 760px) {
             body {
                 align-items: flex-start;
@@ -252,91 +303,113 @@
 <body>
     <div class="app">
         <div class="header">
-            <h1 class="title">ReGrid V/I Control</h1>
-            <div class="subtitle">버튼을 누르면 전압 V, 전류 I 값이 Simulink로 전송됩니다.</div>
-        </div>
-
-        <div class="status-card">
-            <div class="status-label">현재 상태</div>
-            <div class="status-main" id="statusCode">{{ state.label }}</div>
-            <div class="status-desc" id="statusDesc">{{ state.desc }}</div>
-            <div class="status-value" id="statusValue">
-                V={{ state.voltage }} / I={{ state.current }}
+            <h1 class="title">ReGrid V/I + Vision AI Control</h1>
+            <div class="subtitle">
+                버튼 입력, 직접 입력, YOLO 스파크 감지를 통해 전압 V / 전류 I 값을 Simulink로 전송합니다.
             </div>
         </div>
 
-        <div class="button-area">
-            <div class="row row-reset">
-                <button class="fault-0 wide-btn" onclick="sendPreset(0)">
-                    <span class="code">RESET</span>
-                    <span class="desc">정상상태</span>
-                </button>
+        <div class="main-grid">
+            <div class="left-panel">
+                <div class="status-card">
+                    <div class="status-label">현재 상태</div>
+                    <div class="status-main" id="statusCode">{{ state.label }}</div>
+                    <div class="status-desc" id="statusDesc">{{ state.desc }}</div>
+                    <div class="status-value" id="statusValue">
+                        V={{ state.voltage }} / I={{ state.current }}
+                    </div>
+                    <div class="ai-status" id="aiStatus">
+                        AI: {{ state.ai }}
+                    </div>
+                </div>
+
+                <div class="button-area">
+                    <div class="row row-reset">
+                        <button class="fault-0 wide-btn" onclick="sendPreset(0)">
+                            <span class="code">RESET</span>
+                            <span class="desc">정상상태</span>
+                        </button>
+                    </div>
+
+                    <div class="row row-reset">
+                        <button class="manual-btn wide-btn" onclick="openManualModal()">
+                            <span class="code">직접 입력</span>
+                            <span class="desc">전압 V, 전류 I 값을 직접 입력</span>
+                        </button>
+                    </div>
+
+                    <div class="section-title">주요 고장 / 위험 상태</div>
+                    <div class="row row-3">
+                        <button class="fault-1" onclick="sendPreset(1)">
+                            <span class="code">F1</span>
+                            <span class="desc">3상 단락</span>
+                        </button>
+
+                        <button class="fault-8" onclick="sendPreset(8)">
+                            <span class="code">TEMP</span>
+                            <span class="desc">온도 높음</span>
+                        </button>
+
+                        <button class="fault-9" onclick="sendPreset(9)">
+                            <span class="code">SPARK</span>
+                            <span class="desc">스파크 감지 / 화재+소리</span>
+                        </button>
+                    </div>
+
+                    <div class="section-title">2상 단락</div>
+                    <div class="row row-3">
+                        <button class="fault-2" onclick="sendPreset(2)">
+                            <span class="code">F2</span>
+                            <span class="desc">A-B 단락</span>
+                        </button>
+
+                        <button class="fault-3" onclick="sendPreset(3)">
+                            <span class="code">F3</span>
+                            <span class="desc">B-C 단락</span>
+                        </button>
+
+                        <button class="fault-4" onclick="sendPreset(4)">
+                            <span class="code">F4</span>
+                            <span class="desc">C-A 단락</span>
+                        </button>
+                    </div>
+
+                    <div class="section-title">지락 고장</div>
+                    <div class="row row-3">
+                        <button class="fault-5" onclick="sendPreset(5)">
+                            <span class="code">F5</span>
+                            <span class="desc">A상 지락</span>
+                        </button>
+
+                        <button class="fault-6" onclick="sendPreset(6)">
+                            <span class="code">F6</span>
+                            <span class="desc">B상 지락</span>
+                        </button>
+
+                        <button class="fault-7" onclick="sendPreset(7)">
+                            <span class="code">F7</span>
+                            <span class="desc">C상 지락</span>
+                        </button>
+                    </div>
+                </div>
             </div>
 
-            <div class="row row-reset">
-                <button class="manual-btn wide-btn" onclick="openManualModal()">
-                    <span class="code">직접 입력</span>
-                    <span class="desc">전압 V, 전류 I 값을 직접 입력</span>
-                </button>
-            </div>
-
-            <div class="section-title">주요 고장 / 위험 상태</div>
-            <div class="row row-3">
-                <button class="fault-1" onclick="sendPreset(1)">
-                    <span class="code">F1</span>
-                    <span class="desc">3상 단락</span>
-                </button>
-
-                <button class="fault-8" onclick="sendPreset(8)">
-                    <span class="code">TEMP</span>
-                    <span class="desc">온도 높음</span>
-                </button>
-
-                <button class="fault-9" onclick="sendPreset(9)">
-                    <span class="code">SPARK</span>
-                    <span class="desc">스파크 감지 / 화재+소리</span>
-                </button>
-            </div>
-
-            <div class="section-title">2상 단락</div>
-            <div class="row row-3">
-                <button class="fault-2" onclick="sendPreset(2)">
-                    <span class="code">F2</span>
-                    <span class="desc">A-B 단락</span>
-                </button>
-
-                <button class="fault-3" onclick="sendPreset(3)">
-                    <span class="code">F3</span>
-                    <span class="desc">B-C 단락</span>
-                </button>
-
-                <button class="fault-4" onclick="sendPreset(4)">
-                    <span class="code">F4</span>
-                    <span class="desc">C-A 단락</span>
-                </button>
-            </div>
-
-            <div class="section-title">지락 고장</div>
-            <div class="row row-3">
-                <button class="fault-5" onclick="sendPreset(5)">
-                    <span class="code">F5</span>
-                    <span class="desc">A상 지락</span>
-                </button>
-
-                <button class="fault-6" onclick="sendPreset(6)">
-                    <span class="code">F6</span>
-                    <span class="desc">B상 지락</span>
-                </button>
-
-                <button class="fault-7" onclick="sendPreset(7)">
-                    <span class="code">F7</span>
-                    <span class="desc">C상 지락</span>
-                </button>
+            <div class="right-panel">
+                <div class="video-card">
+                    <div class="video-title">Vision AI Spark Detection</div>
+                    <div class="video-box">
+                        <img src="/video_feed" alt="YOLO Video Feed">
+                    </div>
+                    <div class="video-desc">
+                        YOLO 모델이 영상에서 스파크를 감지하면 자동으로 SPARK 상태가 적용되고,
+                        SPARK용 V/I 값이 Simulink로 전송됩니다.
+                    </div>
+                </div>
             </div>
         </div>
 
         <div class="footer">
-            UDP Target: 127.0.0.1:5000 / Packet: float32 V, float32 I
+            UDP Target: 127.0.0.1:5000 / Packet: float32 V, float32 I / YOLO: spark.pt
         </div>
     </div>
 
@@ -367,6 +440,10 @@
             document.getElementById("statusDesc").innerText = data.desc;
             document.getElementById("statusValue").innerText =
                 `V=${data.voltage} / I=${data.current}`;
+
+            if (data.ai !== undefined) {
+                document.getElementById("aiStatus").innerText = `AI: ${data.ai}`;
+            }
         }
 
         async function sendPreset(code) {
@@ -415,6 +492,22 @@
                 alert("전압/전류 입력값을 확인하세요.");
             }
         }
+
+        async function refreshState() {
+            try {
+                const response = await fetch("/state");
+                const data = await response.json();
+
+                if (data.ok) {
+                    updateStatus(data);
+                }
+            } catch (error) {
+                console.log("state refresh error", error);
+            }
+        }
+
+        // YOLO가 자동으로 SPARK 상태를 바꿨을 때 화면도 따라 바뀌게 주기적으로 상태 갱신
+        setInterval(refreshState, 1000);
     </script>
 </body>
 </html>
