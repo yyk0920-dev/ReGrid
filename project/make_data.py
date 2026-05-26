@@ -8,16 +8,11 @@ rows = []
 
 def add_data(fault_code, ia_range, ib_range, ic_range, temp_range, spark, count=100):
     for _ in range(count):
-        ia = round(random.uniform(*ia_range), 3)
-        ib = round(random.uniform(*ib_range), 3)
-        ic = round(random.uniform(*ic_range), 3)
-        temp = round(random.uniform(*temp_range), 2)
-
         rows.append({
-            "Ia": ia,
-            "Ib": ib,
-            "Ic": ic,
-            "temperature": temp,
+            "Ia": round(random.uniform(*ia_range), 3),
+            "Ib": round(random.uniform(*ib_range), 3),
+            "Ic": round(random.uniform(*ic_range), 3),
+            "temperature": round(random.uniform(*temp_range), 2),
             "spark_detected": spark,
             "fault_code": fault_code
         })
@@ -57,6 +52,8 @@ df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
 df.to_csv("data/regrid_data.csv", index=False, encoding="utf-8-sig")
 
-print("regrid_data.csv 생성 완료")
+print("data/regrid_data.csv 생성 완료")
 print(df.head())
+print()
+print("라벨 개수")
 print(df["fault_code"].value_counts().sort_index())
