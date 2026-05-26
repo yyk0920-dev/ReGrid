@@ -1,6 +1,29 @@
+import os
+import sys
 import threading
 import time
 from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent
+VENV_PYTHON = PROJECT_DIR / ".venv" / "Scripts" / "python.exe"
+
+
+def use_project_venv_when_run_directly():
+    running_this_file = Path(sys.argv[0]).resolve() == Path(__file__).resolve()
+    already_using_venv = Path(sys.executable).resolve() == VENV_PYTHON.resolve()
+
+    if (
+        running_this_file
+        and VENV_PYTHON.exists()
+        and not already_using_venv
+        and os.environ.get("REGRID_VENV_BOOTSTRAPPED") != "1"
+    ):
+        os.environ["REGRID_VENV_BOOTSTRAPPED"] = "1"
+        os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), *sys.argv])
+
+
+use_project_venv_when_run_directly()
 
 import cv2
 from flask import Flask, Response, jsonify, render_template, request
@@ -9,16 +32,18 @@ from ultralytics import YOLO
 
 
 app = Flask(__name__)
-BASE_DIR = Path(__file__).resolve().parent
 
 # =========================
 # Simulink / MATLAB 설정
 # =========================
 MODEL_PATH = r"C:\Users\20240620-LapTop\Documents\카카오톡 받은 파일\circuit4.slx"
 MODEL_NAME = "circuit4"
+ENGINE_NAME = "ReGridEngine"
+MATLAB_START_OPTIONS = "-desktop -nosplash"
 
 VOLTAGE_BLOCK = f"{MODEL_NAME}/voltage_cmd"
 FAULT_BLOCK = f"{MODEL_NAME}/fault_code_cmd"
+ESS_BLOCK = f"{MODEL_NAME}/ess_cmd"
 
 DEFAULT_VOLTAGE = 12.0
 POWER_OFF_VOLTAGE = 0.0
@@ -73,21 +98,30 @@ def init_matlab():
     if eng is not None:
         return eng
 
-    print("Connecting to existing MATLAB Engine...")
+    print("Connecting to MATLAB Engine...")
 
     names = matlab.engine.find_matlab()
     print("Available MATLAB engines:", names)
 
-    if "ReGridEngine" not in names:
-        raise RuntimeError(
-            "ReGridEngine을 찾지 못했습니다. MATLAB 명령창에서 "
-            "matlab.engine.shareEngine('ReGridEngine')를 먼저 실행하세요."
-        )
+    if ENGINE_NAME in names:
+        try:
+            eng = matlab.engine.connect_matlab(ENGINE_NAME)
+            print(f"Connected to existing MATLAB: {ENGINE_NAME}")
+        except Exception as e:
+            print(f"Failed to connect to shared MATLAB {ENGINE_NAME}: {e}")
 
-    eng = matlab.engine.connect_matlab("ReGridEngine")
-    print("Connected to existing MATLAB: ReGridEngine")
+    if eng is None:
+        try:
+            print("Starting a MATLAB Engine in this Python session...")
+            eng = matlab.engine.start_matlab(MATLAB_START_OPTIONS)
+            print("Started MATLAB Engine")
+        except Exception as e:
+            raise RuntimeError(
+                "MATLAB Engine 연결에 실패했습니다. MATLAB과 이 터미널의 권한을 "
+                "같게 맞추거나 관리자 PowerShell에서 실행하세요."
+            ) from e
 
-    # 이미 열려 있는 모델에 붙는 용도. 새 창 띄우지 않음.
+    # 이미 열려 있는 모델에 붙거나, 새 엔진이면 모델을 로드합니다.
     eng.load_system(MODEL_PATH, nargout=0)
 
     print("MATLAB Engine ready")
@@ -143,6 +177,21 @@ def make_response():
         "ai": state["ai"],
         "camera_mode": state["camera_mode"],
     }
+
+
+def action_response(action):
+    try:
+        action()
+    except Exception as e:
+        state["ai"] = f"MATLAB 연결 오류: {e}"
+        print(f"MATLAB action error: {e}")
+        return jsonify({
+            **make_response(),
+            "ok": False,
+            "error": str(e),
+        }), 503
+
+    return jsonify(make_response())
 
 
 # =========================
@@ -221,26 +270,22 @@ def preset(code):
     if code not in faults:
         return jsonify({"ok": False, "error": "invalid code"}), 400
 
-    set_fault(code, "고장 버튼 입력")
-    return jsonify(make_response())
+    return action_response(lambda: set_fault(code, "고장 버튼 입력"))
 
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    set_fault(0, "고장 해제")
-    return jsonify(make_response())
+    return action_response(lambda: set_fault(0, "고장 해제"))
 
 
 @app.route("/power/on", methods=["POST"])
 def power_on():
-    set_power_on()
-    return jsonify(make_response())
+    return action_response(set_power_on)
 
 
 @app.route("/power/off", methods=["POST"])
 def power_off():
-    set_power_off()
-    return jsonify(make_response())
+    return action_response(set_power_off)
 
 
 @app.route("/manual", methods=["POST"])
@@ -269,8 +314,9 @@ def manual():
     state["desc"] = desc
     state["ai"] = "직접 입력"
 
-    send_to_simulink(state["voltage"], state["code"], print_log=True)
-    return jsonify(make_response())
+    return action_response(
+        lambda: send_to_simulink(state["voltage"], state["code"], print_log=True)
+    )
 
 
 # =========================
@@ -353,14 +399,33 @@ def video_feed():
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
+@app.post("/ess/<int:cmd>")
+def set_ess(cmd):
+    cmd = 1 if cmd else 0
+
+    def update_ess():
+        with eng_lock:
+            engine = init_matlab()
+            engine.set_param(ESS_BLOCK, "Value", str(cmd), nargout=0)
+            readback = engine.get_param(ESS_BLOCK, "Value")
+
+        print(f"ESS updated | ess_cmd={readback}", flush=True)
+        return readback
+
+    try:
+        readback = update_ess()
+    except Exception as e:
+        state["ai"] = f"MATLAB 연결 오류: {e}"
+        print(f"ESS update error: {e}", flush=True)
+        return jsonify({"ok": False, "ess_cmd": cmd, "error": str(e)}), 503
+
+    return jsonify({"ok": True, "ess_cmd": cmd, "readback": readback})
 
 # =========================
 # 실행부
 # =========================
 if __name__ == "__main__":
-    # 실행할 때 한 번 MATLAB/Simulink 연결하고 초기값 넣기
-    send_to_simulink(DEFAULT_VOLTAGE, 0, print_log=True)
-
+    print("Flask server starting. MATLAB connects on the first control request.")
     app.run(
         host="127.0.0.1",
         port=8000,
