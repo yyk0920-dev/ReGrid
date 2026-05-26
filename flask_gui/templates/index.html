@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ReGrid V/I + Vision AI Control</title>
+    <title>ReGrid Control</title>
     <style>
         * {
             box-sizing: border-box;
@@ -135,8 +135,8 @@
             gap: 16px;
         }
 
-        .row-reset {
-            grid-template-columns: 1fr;
+        .row-2 {
+            grid-template-columns: repeat(2, 1fr);
         }
 
         .row-3 {
@@ -178,13 +178,16 @@
             padding: 18px 12px;
         }
 
-        .fault-0 { background: linear-gradient(135deg, #15803d, #22c55e); }
-        .manual-btn { background: linear-gradient(135deg, #0369a1, #38bdf8); }
+        .power-on { background: linear-gradient(135deg, #15803d, #22c55e); }
+        .power-off { background: linear-gradient(135deg, #374151, #6b7280); }
+        .fault-0 { background: linear-gradient(135deg, #0369a1, #38bdf8); }
         .fault-1 { background: linear-gradient(135deg, #b91c1c, #ef4444); }
         .fault-2, .fault-3, .fault-4 { background: linear-gradient(135deg, #c2410c, #f97316); }
         .fault-5, .fault-6, .fault-7 { background: linear-gradient(135deg, #a16207, #eab308); }
         .fault-8 { background: linear-gradient(135deg, #6d28d9, #8b5cf6); }
         .fault-9 { background: linear-gradient(135deg, #9f1239, #e11d48); }
+        .camera-on { background: linear-gradient(135deg, #0f766e, #14b8a6); }
+        .camera-off { background: linear-gradient(135deg, #4b5563, #9ca3af); }
 
         .code {
             font-size: 26px;
@@ -204,70 +207,6 @@
             font-size: 13px;
             text-align: right;
             font-family: Consolas, monospace;
-        }
-
-        .modal-bg {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.65);
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-            z-index: 10;
-        }
-
-        .modal {
-            width: min(420px, 100%);
-            background: #111827;
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            border-radius: 18px;
-            padding: 24px;
-            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
-        }
-
-        .modal h2 {
-            margin: 0 0 16px 0;
-            font-size: 24px;
-        }
-
-        .input-group {
-            margin-bottom: 14px;
-        }
-
-        .input-group label {
-            display: block;
-            margin-bottom: 6px;
-            color: #d1d5db;
-            font-weight: 700;
-        }
-
-        .input-group input {
-            width: 100%;
-            padding: 13px 14px;
-            border-radius: 12px;
-            border: 1px solid #374151;
-            background: #1f2937;
-            color: white;
-            font-size: 18px;
-            outline: none;
-        }
-
-        .modal-actions {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-            margin-top: 18px;
-        }
-
-        .send-btn {
-            background: linear-gradient(135deg, #15803d, #22c55e);
-            min-height: 58px;
-        }
-
-        .cancel-btn {
-            background: linear-gradient(135deg, #4b5563, #6b7280);
-            min-height: 58px;
         }
 
         @media (max-width: 1000px) {
@@ -290,6 +229,7 @@
                 font-size: 30px;
             }
 
+            .row-2,
             .row-3 {
                 grid-template-columns: 1fr;
             }
@@ -303,9 +243,9 @@
 <body>
     <div class="app">
         <div class="header">
-            <h1 class="title">ReGrid V/I + Vision AI Control</h1>
+            <h1 class="title">ReGrid Control</h1>
             <div class="subtitle">
-                버튼 입력, 직접 입력, YOLO 스파크 감지를 통해 전압 V / 전류 I 값을 Simulink로 전송합니다.
+                기본 12V 전원을 인가하고, 고장 버튼으로 Simulink 고장 스위치를 제어합니다.
             </div>
         </div>
 
@@ -316,7 +256,7 @@
                     <div class="status-main" id="statusCode">{{ state.label }}</div>
                     <div class="status-desc" id="statusDesc">{{ state.desc }}</div>
                     <div class="status-value" id="statusValue">
-                        V={{ state.voltage }} / I={{ state.current }}
+                        V={{ state.voltage }} / CODE={{ state.code }}
                     </div>
                     <div class="ai-status" id="aiStatus">
                         AI: {{ state.ai }}
@@ -324,17 +264,36 @@
                 </div>
 
                 <div class="button-area">
-                    <div class="row row-reset">
-                        <button class="fault-0 wide-btn" onclick="sendPreset(0)">
-                            <span class="code">RESET</span>
-                            <span class="desc">정상상태</span>
+                    <div class="section-title">전원 제어</div>
+                    <div class="row row-2">
+                        <button class="power-on wide-btn" onclick="powerOn()">
+                            <span class="code">POWER ON</span>
+                            <span class="desc">12V 전원 인가</span>
+                        </button>
+
+                        <button class="power-off wide-btn" onclick="powerOff()">
+                            <span class="code">POWER OFF</span>
+                            <span class="desc">전원 차단</span>
                         </button>
                     </div>
 
-                    <div class="row row-reset">
-                        <button class="manual-btn wide-btn" onclick="openManualModal()">
-                            <span class="code">직접 입력</span>
-                            <span class="desc">전압 V, 전류 I 값을 직접 입력</span>
+                    <div class="section-title">고장 해제</div>
+                    <div class="row row-2">
+                        <button class="fault-0 wide-btn" onclick="resetFault()">
+                            <span class="code">RESET</span>
+                            <span class="desc">고장 스위치 해제</span>
+                        </button>
+
+                        <button class="camera-on wide-btn" onclick="cameraOn()">
+                            <span class="code">CAMERA ON</span>
+                            <span class="desc">스파크 감지 활성화</span>
+                        </button>
+                    </div>
+
+                    <div class="row row-2">
+                        <button class="camera-off wide-btn" onclick="cameraOff()">
+                            <span class="code">CAMERA OFF</span>
+                            <span class="desc">스파크 감지 비활성화</span>
                         </button>
                     </div>
 
@@ -352,7 +311,7 @@
 
                         <button class="fault-9" onclick="sendPreset(9)">
                             <span class="code">SPARK</span>
-                            <span class="desc">스파크 감지 / 화재+소리</span>
+                            <span class="desc">스파크 감지</span>
                         </button>
                     </div>
 
@@ -401,36 +360,14 @@
                         <img src="/video_feed" alt="YOLO Video Feed">
                     </div>
                     <div class="video-desc">
-                        YOLO 모델이 영상에서 스파크를 감지하면 자동으로 SPARK 상태가 적용되고,
-                        SPARK용 V/I 값이 Simulink로 전송됩니다.
+                        CAMERA ON 상태에서 YOLO 모델이 스파크를 감지하면 SPARK 고장코드가 Simulink로 전송됩니다.
                     </div>
                 </div>
             </div>
         </div>
 
         <div class="footer">
-            UDP Target: 127.0.0.1:5000 / Packet: float32 V, float32 I / YOLO: spark.pt
-        </div>
-    </div>
-
-    <div class="modal-bg" id="manualModal">
-        <div class="modal">
-            <h2>직접 입력</h2>
-
-            <div class="input-group">
-                <label for="manualVoltage">전압 V</label>
-                <input type="number" id="manualVoltage" step="0.01" value="12.00">
-            </div>
-
-            <div class="input-group">
-                <label for="manualCurrent">전류 I</label>
-                <input type="number" id="manualCurrent" step="0.01" value="1.00">
-            </div>
-
-            <div class="modal-actions">
-                <button class="cancel-btn" onclick="closeManualModal()">취소</button>
-                <button class="send-btn" onclick="sendManual()">전송</button>
-            </div>
+            MATLAB Engine: ReGridEngine / Blocks: voltage_cmd, fault_code_cmd / YOLO: spark.pt
         </div>
     </div>
 
@@ -439,7 +376,7 @@
             document.getElementById("statusCode").innerText = data.label;
             document.getElementById("statusDesc").innerText = data.desc;
             document.getElementById("statusValue").innerText =
-                `V=${data.voltage} / I=${data.current}`;
+                `V=${data.voltage} / CODE=${data.code}`;
 
             if (data.ai !== undefined) {
                 document.getElementById("aiStatus").innerText = `AI: ${data.ai}`;
@@ -460,26 +397,26 @@
             }
         }
 
-        function openManualModal() {
-            document.getElementById("manualModal").style.display = "flex";
+        async function resetFault() {
+            const response = await fetch("/reset", {
+                method: "POST"
+            });
+
+            const data = await response.json();
+
+            if (data.ok) {
+                updateStatus(data);
+            }
         }
 
-        function closeManualModal() {
-            document.getElementById("manualModal").style.display = "none";
-        }
-
-        async function sendManual() {
-            const voltage = document.getElementById("manualVoltage").value;
-            const current = document.getElementById("manualCurrent").value;
-
-            const response = await fetch("/manual", {
+        async function powerOn() {
+            const response = await fetch("/power/on", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    voltage: voltage,
-                    current: current
+                    voltage: 12
                 })
             });
 
@@ -487,9 +424,42 @@
 
             if (data.ok) {
                 updateStatus(data);
-                closeManualModal();
-            } else {
-                alert("전압/전류 입력값을 확인하세요.");
+            }
+        }
+
+        async function powerOff() {
+            const response = await fetch("/power/off", {
+                method: "POST"
+            });
+
+            const data = await response.json();
+
+            if (data.ok) {
+                updateStatus(data);
+            }
+        }
+
+        async function cameraOn() {
+            const response = await fetch("/camera/on", {
+                method: "POST"
+            });
+
+            const data = await response.json();
+
+            if (data.ok) {
+                updateStatus(data);
+            }
+        }
+
+        async function cameraOff() {
+            const response = await fetch("/camera/off", {
+                method: "POST"
+            });
+
+            const data = await response.json();
+
+            if (data.ok) {
+                updateStatus(data);
             }
         }
 
@@ -506,7 +476,6 @@
             }
         }
 
-        // YOLO가 자동으로 SPARK 상태를 바꿨을 때 화면도 따라 바뀌게 주기적으로 상태 갱신
         setInterval(refreshState, 1000);
     </script>
 </body>
