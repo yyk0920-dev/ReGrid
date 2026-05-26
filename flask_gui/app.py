@@ -1,25 +1,30 @@
-import socket
-import struct
+import threading
 import time
 from pathlib import Path
 
 import cv2
 from flask import Flask, Response, jsonify, render_template, request
+import matlab.engine
 from ultralytics import YOLO
+
 
 app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 
-VOLTAGE_UDP_IP = "127.0.0.1"
-VOLTAGE_UDP_PORT = 5000
-voltage_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# =========================
+# Simulink / MATLAB 설정
+# =========================
+MODEL_PATH = r"C:\Users\20240620-LapTop\Documents\카카오톡 받은 파일\circuit4.slx"
+MODEL_NAME = "circuit4"
 
-FAULT_UDP_IP = "127.0.0.1"
-FAULT_UDP_PORT = 5001
-fault_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+VOLTAGE_BLOCK = f"{MODEL_NAME}/voltage_cmd"
+FAULT_BLOCK = f"{MODEL_NAME}/fault_code_cmd"
 
 DEFAULT_VOLTAGE = 12.0
 POWER_OFF_VOLTAGE = 0.0
+
+eng = None
+eng_lock = threading.Lock()
 
 try:
     model = YOLO(BASE_DIR / "spark.pt")
@@ -31,12 +36,16 @@ except Exception as e:
 SPARK_COOLDOWN_SEC = 3.0
 last_spark_time = 0.0
 
+
+# =========================
+# 현재 상태
+# =========================
 state = {
     "power": True,
+    "voltage": DEFAULT_VOLTAGE,
     "code": 0,
     "label": "POWER ON",
     "desc": "정상 전원 인가",
-    "voltage": DEFAULT_VOLTAGE,
     "ai": "대기 중",
     "camera_mode": False,
 }
@@ -55,63 +64,117 @@ faults = {
 }
 
 
-def send_voltage_udp(voltage):
-    msg = struct.pack(">f", float(voltage))
-    voltage_sock.sendto(msg, (VOLTAGE_UDP_IP, VOLTAGE_UDP_PORT))
+# =========================
+# MATLAB Engine 초기화
+# =========================
+def init_matlab():
+    global eng
+
+    if eng is not None:
+        return eng
+
+    print("Connecting to existing MATLAB Engine...")
+
+    names = matlab.engine.find_matlab()
+    print("Available MATLAB engines:", names)
+
+    if "ReGridEngine" not in names:
+        raise RuntimeError(
+            "ReGridEngine을 찾지 못했습니다. MATLAB 명령창에서 "
+            "matlab.engine.shareEngine('ReGridEngine')를 먼저 실행하세요."
+        )
+
+    eng = matlab.engine.connect_matlab("ReGridEngine")
+    print("Connected to existing MATLAB: ReGridEngine")
+
+    # 이미 열려 있는 모델에 붙는 용도. 새 창 띄우지 않음.
+    eng.load_system(MODEL_PATH, nargout=0)
+
+    print("MATLAB Engine ready")
+    return eng
 
 
-def send_fault_udp(code):
-    msg = struct.pack(">f", float(int(code)))
-    fault_sock.sendto(msg, (FAULT_UDP_IP, FAULT_UDP_PORT))
+def send_to_simulink(voltage, code, print_log=False):
+    with eng_lock:
+        engine = init_matlab()
 
+        engine.set_param(
+            VOLTAGE_BLOCK,
+            "Value",
+            str(float(voltage)),
+            nargout=0,
+        )
 
-def send_all():
-    send_voltage_udp(state["voltage"])
-    send_fault_udp(state["code"])
+        engine.set_param(
+            FAULT_BLOCK,
+            "Value",
+            str(float(code)),
+            nargout=0,
+        )
+
+        v_read = engine.get_param(VOLTAGE_BLOCK, "Value")
+        c_read = engine.get_param(FAULT_BLOCK, "Value")
+
     print(
-        f"UDP sent: power={state['power']}, "
-        f"voltage={state['voltage']}, "
-        f"code={state['code']}, "
-        f"label={state['label']}"
+        f"Simulink read-back | "
+        f"voltage_cmd={v_read}, fault_code_cmd={c_read}"
     )
 
+    if print_log:
+        print(
+            f"Simulink updated | "
+            f"voltage={float(voltage)}, "
+            f"code={float(code)}, "
+            f"label={state['label']}"
+        )
 
+
+# =========================
+# 응답 함수
+# =========================
 def make_response():
     return {
         "ok": True,
         "power": state["power"],
+        "voltage": state["voltage"],
         "code": state["code"],
         "label": state["label"],
         "desc": state["desc"],
-        "voltage": state["voltage"],
         "ai": state["ai"],
         "camera_mode": state["camera_mode"],
     }
 
 
-def set_fault(code, ai_text="수동 입력"):
+# =========================
+# 상태 변경 함수
+# =========================
+def set_fault(code, ai_text="고장 버튼 입력"):
     if code not in faults:
         code = 0
 
     label, desc = faults[code]
 
+    # F1~F9 / RESET은 전원을 끄는 게 아니라
+    # 12V는 유지하고 fault_code만 바꾸는 구조
+    state["power"] = True
+    state["voltage"] = DEFAULT_VOLTAGE
     state["code"] = int(code)
     state["label"] = label
     state["desc"] = desc
     state["ai"] = ai_text
 
-    send_all()
+    send_to_simulink(state["voltage"], state["code"], print_log=True)
 
 
-def set_power_on(voltage=DEFAULT_VOLTAGE):
+def set_power_on():
     state["power"] = True
-    state["voltage"] = float(voltage)
+    state["voltage"] = DEFAULT_VOLTAGE
     state["code"] = 0
     state["label"] = "POWER ON"
     state["desc"] = "정상 전원 인가"
     state["ai"] = "전원 ON"
 
-    send_all()
+    send_to_simulink(state["voltage"], state["code"], print_log=True)
 
 
 def set_power_off():
@@ -122,7 +185,7 @@ def set_power_off():
     state["desc"] = "전원 차단"
     state["ai"] = "전원 OFF"
 
-    send_all()
+    send_to_simulink(state["voltage"], state["code"], print_log=True)
 
 
 def trigger_spark():
@@ -140,9 +203,17 @@ def trigger_spark():
     set_fault(9, "스파크 감지됨")
 
 
+# =========================
+# Flask 라우트
+# =========================
 @app.route("/")
 def index():
     return render_template("index.html", faults=faults, state=state)
+
+
+@app.route("/state")
+def get_state():
+    return jsonify(make_response())
 
 
 @app.route("/preset/<int:code>", methods=["POST"])
@@ -162,14 +233,7 @@ def reset():
 
 @app.route("/power/on", methods=["POST"])
 def power_on():
-    data = request.get_json() or {}
-
-    try:
-        voltage = float(data.get("voltage", DEFAULT_VOLTAGE))
-    except (TypeError, ValueError):
-        voltage = DEFAULT_VOLTAGE
-
-    set_power_on(voltage)
+    set_power_on()
     return jsonify(make_response())
 
 
@@ -191,25 +255,27 @@ def manual():
     try:
         code = int(data.get("code", state["code"]))
     except (TypeError, ValueError):
-        code = state["code"]
+        code = 0
 
     if code not in faults:
         code = 0
 
-    state["voltage"] = voltage
-    state["power"] = voltage > 0
-
     label, desc = faults[code]
 
+    state["voltage"] = voltage
+    state["power"] = voltage > 0
     state["code"] = code
     state["label"] = label
     state["desc"] = desc
     state["ai"] = "직접 입력"
 
-    send_all()
+    send_to_simulink(state["voltage"], state["code"], print_log=True)
     return jsonify(make_response())
 
 
+# =========================
+# YOLO 카메라 제어
+# =========================
 @app.route("/camera/on", methods=["POST"])
 def camera_on():
     state["camera_mode"] = True
@@ -238,11 +304,6 @@ def camera_mode():
     return jsonify(make_response())
 
 
-@app.route("/state")
-def get_state():
-    return jsonify(make_response())
-
-
 def generate_frames():
     camera = cv2.VideoCapture(0)
 
@@ -250,38 +311,39 @@ def generate_frames():
         print("camera open failed")
         return
 
-    while True:
-        success, frame = camera.read()
+    try:
+        while True:
+            success, frame = camera.read()
 
-        if not success:
-            break
+            if not success:
+                break
 
-        output_frame = frame
+            output_frame = frame
 
-        if state["camera_mode"]:
-            results = model(frame, conf=0.4, verbose=False)
-            output_frame = results[0].plot()
+            if state["camera_mode"]:
+                results = model(frame, conf=0.4, verbose=False)
+                output_frame = results[0].plot()
 
-            if len(results[0].boxes) > 0:
-                trigger_spark()
-            else:
-                state["ai"] = "카메라 ON"
+                if len(results[0].boxes) > 0:
+                    trigger_spark()
+                else:
+                    state["ai"] = "카메라 ON"
 
-        ret, buffer = cv2.imencode(".jpg", output_frame)
+            ret, buffer = cv2.imencode(".jpg", output_frame)
 
-        if not ret:
-            continue
+            if not ret:
+                continue
 
-        frame_bytes = buffer.tobytes()
+            frame_bytes = buffer.tobytes()
 
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n"
-            + frame_bytes
-            + b"\r\n"
-        )
-
-    camera.release()
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n"
+                + frame_bytes
+                + b"\r\n"
+            )
+    finally:
+        camera.release()
 
 
 @app.route("/video_feed")
@@ -292,6 +354,16 @@ def video_feed():
     )
 
 
+# =========================
+# 실행부
+# =========================
 if __name__ == "__main__":
-    send_all()
-    app.run(host="127.0.0.1", port=8000, debug=True)
+    # 실행할 때 한 번 MATLAB/Simulink 연결하고 초기값 넣기
+    send_to_simulink(DEFAULT_VOLTAGE, 0, print_log=True)
+
+    app.run(
+        host="127.0.0.1",
+        port=8000,
+        debug=True,
+        use_reloader=False,
+    )
