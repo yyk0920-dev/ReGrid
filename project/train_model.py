@@ -1,46 +1,51 @@
+import os
+import joblib
 import pandas as pd
-from sklearn.model_selection import train_test_split
+
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
-import pickle
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
-# 데이터 읽기
-df = pd.read_csv("data/regrid_data.csv")
+DATA_PATH = "data/regrid_data.csv"
+MODEL_PATH = "models/random_forest_model.pkl"
 
-# 입력값
-X = df[["A", "B", "C"]]
+os.makedirs("models", exist_ok=True)
 
-# 정답값
-y = df["label"]
+df = pd.read_csv(DATA_PATH)
 
-# 학습용 / 테스트용 나누기
+X = df[["Ia", "Ib", "Ic", "temperature", "spark_detected"]]
+y = df["fault_code"]
+
 X_train, X_test, y_train, y_test = train_test_split(
     X,
     y,
     test_size=0.2,
-    random_state=42
-)
-
-# RandomForest 모델 생성
-model = RandomForestClassifier(
-    n_estimators=100,   # 결정트리 개수
-    max_depth=None,     # 트리 깊이 제한 없음
     random_state=42,
-    n_jobs=-1           # CPU 코어 최대 사용
+    stratify=y
 )
 
-# 학습
+model = RandomForestClassifier(
+    n_estimators=200,
+    max_depth=None,
+    random_state=42,
+    class_weight="balanced"
+)
+
 model.fit(X_train, y_train)
 
-# 테스트
-pred = model.predict(X_test)
+y_pred = model.predict(X_test)
 
-# 정확도 출력
-accuracy = accuracy_score(y_test, pred)
-print("정확도:", accuracy)
+acc = accuracy_score(y_test, y_pred)
 
-# 모델 저장
-with open("models/regrid_model.pkl", "wb") as f:
-    pickle.dump(model, f)
+print("정확도:", acc)
+print()
+print("분류 리포트")
+print(classification_report(y_test, y_pred))
+print()
+print("혼동 행렬")
+print(confusion_matrix(y_test, y_pred))
 
-print("모델 저장 완료: models/regrid_model.pkl")
+joblib.dump(model, MODEL_PATH)
+
+print()
+print(f"모델 저장 완료: {MODEL_PATH}")
