@@ -259,21 +259,23 @@
         <div class="header">
             <h1 class="title">ReGrid Control</h1>
             <div class="subtitle">
-                기본 12V 전원을 인가하고, 고장 버튼으로 Simulink 고장 스위치를 제어합니다.
+                Flask 버튼은 실제 고장 상태 표시가 아니라 Simulink 고장 시뮬레이션 입력 명령입니다.
             </div>
         </div>
 
         <div class="main-grid">
             <div class="left-panel">
                 <div class="status-card">
-                    <div class="status-label">현재 상태</div>
-                    <div class="status-main" id="statusCode">{{ state.label }}</div>
-                    <div class="status-desc" id="statusDesc">{{ state.desc }}</div>
+                    <div class="status-label">마지막 시뮬레이션 입력</div>
+                    <div class="status-main" id="statusCode">{{ state.label }} 입력</div>
+                    <div class="status-desc" id="statusDesc">
+                        Simulink voltage_cmd={{ state.voltage }}, fault_code_cmd={{ state.code }} 전송 명령
+                    </div>
                     <div class="status-value" id="statusValue">
                         V={{ state.voltage }} / CODE={{ state.code }}
                     </div>
                     <div class="ai-status" id="aiStatus">
-                        AI: {{ state.ai }}
+                        CONTROL: {{ state.ai }}
                     </div>
                     <div class="camera-status" id="cameraStatus">
                         CAMERA: {{ "ON" if state.camera_mode else "OFF" }}
@@ -281,7 +283,7 @@
                 </div>
 
                 <div class="button-area">
-                    <div class="section-title">전원 제어</div>
+                    <div class="section-title">전원 입력 명령</div>
                     <div class="row row-2">
                         <button class="power-on wide-btn" onclick="powerOn()">
                             <span class="code">POWER ON</span>
@@ -294,7 +296,7 @@
                         </button>
                     </div>
 
-                    <div class="section-title">고장 해제 / 카메라 제어</div>
+                    <div class="section-title">시뮬레이션 해제 입력 / 카메라 제어</div>
                     <div class="row row-3">
                         <button class="fault-0 wide-btn" onclick="resetFault()">
                             <span class="code">RESET</span>
@@ -312,7 +314,7 @@
                         </button>
                     </div>
 
-                    <div class="section-title">주요 고장 / 위험 상태</div>
+                    <div class="section-title">주요 고장 시뮬레이션 입력</div>
                     <div class="row row-3">
                         <button class="fault-1" onclick="sendPreset(1)">
                             <span class="code">F1</span>
@@ -330,7 +332,7 @@
                         </button>
                     </div>
 
-                    <div class="section-title">2상 단락</div>
+                    <div class="section-title">2상 단락 시뮬레이션 입력</div>
                     <div class="row row-3">
                         <button class="fault-2" onclick="sendPreset(2)">
                             <span class="code">F2</span>
@@ -348,7 +350,7 @@
                         </button>
                     </div>
 
-                    <div class="section-title">지락 고장</div>
+                    <div class="section-title">지락 고장 시뮬레이션 입력</div>
                     <div class="row row-3">
                         <button class="fault-5" onclick="sendPreset(5)">
                             <span class="code">F5</span>
@@ -375,7 +377,7 @@
                         <img id="cameraFeed" src="/video_feed" alt="YOLO Video Feed">
                     </div>
                     <div class="video-desc" id="videoDesc">
-                        CAMERA ON 상태에서 YOLO 모델이 스파크를 감지하면 SPARK 고장코드가 Simulink로 전송됩니다.
+                        CAMERA ON 상태의 YOLO 감지는 화면 알림용입니다. Simulink 고장코드는 버튼 입력으로만 전송됩니다.
                     </div>
                 </div>
             </div>
@@ -398,13 +400,15 @@
         }
 
         function updateStatus(data) {
-            document.getElementById("statusCode").innerText = data.label;
-            document.getElementById("statusDesc").innerText = data.desc;
+            document.getElementById("statusCode").innerText =
+                data.command_label || `${data.label} 입력`;
+            document.getElementById("statusDesc").innerText =
+                data.command_desc || `Simulink fault_code_cmd=${data.code} 전송 명령`;
             document.getElementById("statusValue").innerText =
                 `V=${data.voltage} / CODE=${data.code}`;
 
             if (data.ai !== undefined) {
-                document.getElementById("aiStatus").innerText = `AI: ${data.ai}`;
+                document.getElementById("aiStatus").innerText = `CONTROL: ${data.ai}`;
             }
 
             if (data.camera_mode !== undefined) {
@@ -413,7 +417,7 @@
 
                 document.getElementById("videoDesc").innerText =
                     data.camera_mode
-                        ? "CAMERA ON: YOLO 스파크 감지가 활성화되어 있습니다."
+                        ? "CAMERA ON: YOLO 스파크 감지는 화면 알림용이며 고장코드는 바꾸지 않습니다."
                         : "CAMERA OFF: 영상은 표시되지만 YOLO 스파크 감지는 비활성화되어 있습니다.";
             }
         }
