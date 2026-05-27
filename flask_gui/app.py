@@ -485,7 +485,7 @@ def set_ess(cmd):
 if __name__ == "__main__":
     print("Flask server starting. MATLAB connects on the first control request.")
     app.run(
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=8000,
         debug=True,
         use_reloader=False,

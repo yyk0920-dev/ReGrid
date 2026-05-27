@@ -2,7 +2,6 @@ import socket
 import struct
 import joblib
 import pandas as pd
-import requests
 import numpy as np
 
 from collections import deque
@@ -11,8 +10,6 @@ MODEL_PATH = "models/random_forest_fault_classifier.pkl"
 
 UDP_IP = "0.0.0.0"
 UDP_PORT = 5000
-
-PC_URL = "http://192.168.137.1:8000"
 
 WINDOW_SIZE = 10
 
@@ -158,26 +155,6 @@ def predict_fault(Ia, Ib, Ic, temperature, sound):
     return fault_code, fault_name
 
 
-def send_fault_code(fault_code):
-
-    try:
-
-        r = requests.post(
-            f"{PC_URL}/preset/{fault_code}",
-            timeout=10
-        )
-
-        print(
-            f"[PC SEND] "
-            f"/preset/{fault_code} "
-            f"status={r.status_code}"
-        )
-
-    except Exception as e:
-
-        print("[PC SEND FAIL]", e)
-
-
 def main():
 
     sock = socket.socket(
@@ -192,8 +169,6 @@ def main():
     print("UDP 수신:", f"{UDP_IP}:{UDP_PORT}")
     print("MODEL:", MODEL_PATH)
     print("================================")
-
-    last_fault_code = None
 
     while True:
 
@@ -229,15 +204,6 @@ def main():
             f"=> AI 예측: "
             f"{fault_code} ({fault_name})"
         )
-
-        # ----------------------------------------
-        # fault_code 바뀔 때만 Flask 전송
-        # ----------------------------------------
-        if fault_code != last_fault_code:
-
-            send_fault_code(fault_code)
-
-            last_fault_code = fault_code
 
 
 if __name__ == "__main__":
