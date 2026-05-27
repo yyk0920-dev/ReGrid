@@ -3,6 +3,9 @@ import struct
 import joblib
 import pandas as pd
 import numpy as np
+import json
+import urllib.request
+import urllib.error
 
 from collections import deque
 
@@ -10,7 +13,27 @@ MODEL_PATH = "models/random_forest_fault_classifier.pkl"
 
 UDP_IP = "0.0.0.0"
 UDP_PORT = 5000
-OUTPUT_MODE = "terminal_only"
+
+# terminal_only: 터미널 출력만
+# terminal_and_flask: 터미널 출력 + Flask로 판단 결과 전송
+OUTPUT_MODE = "terminal_and_flask"
+
+# =========================
+# Flask 전송 설정
+# =========================
+# 각 RPi별 노드명
+# A RPi면 "A", B RPi면 "B", C RPi면 "C"
+MY_NODE = "A"
+
+# Flask가 실행 중인 네 노트북 IP
+FLASK_PC_IP = "192.168.137.1"
+FLASK_PORT = 8000
+NODE_DECISION_URL = f"http://{FLASK_PC_IP}:{FLASK_PORT}/node_decision"
+
+# 같은 fault_code를 너무 자주 보내지 않도록 제한
+SEND_INTERVAL_SEC = 0.5
+last_send_time = 0.0
+last_sent_fault_code = None
 
 WINDOW_SIZE = 10
 
@@ -37,6 +60,7 @@ fault_names = {
 }
 
 model = joblib.load(MODEL_PATH)
+
 
 def decode_packet(data):
 
@@ -156,6 +180,73 @@ def predict_fault(Ia, Ib, Ic, temperature, sound):
     return fault_code, fault_name
 
 
+def decide_relay(fault_code):
+    """
+    relay_decision 의미:
+    0 = 차단 필요 없음 / 연결 유지
+    1 = 차단 필요 / 릴레이 개방
+
+    현재 기준:
+    fault_code 1~9면 차단 필요.
+    """
+    if 1 <= int(fault_code) <= 9:
+        return 1
+
+    return 0
+
+
+def send_to_flask(fault_code, fault_name):
+    global last_send_time
+    global last_sent_fault_code
+
+    fault_code = int(fault_code)
+    relay_decision = decide_relay(fault_code)
+
+    now = time.time()
+
+    # 같은 코드가 계속 반복될 때 너무 자주 보내지 않도록 제한
+    if (
+        last_sent_fault_code == fault_code
+        and now - last_send_time < SEND_INTERVAL_SEC
+    ):
+        return
+
+    payload = {
+        "node": MY_NODE,
+        "fault_code": fault_code,
+        "relay_decision": relay_decision,
+        "fault_name": fault_name,
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        NODE_DECISION_URL,
+        data=data,
+        headers={
+            "Content-Type": "application/json"
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=2) as response:
+            result = response.read().decode("utf-8")
+
+        last_send_time = now
+        last_sent_fault_code = fault_code
+
+        print(
+            f"[FLASK SEND OK] node={MY_NODE}, "
+            f"fault_code={fault_code}, relay_decision={relay_decision}"
+        )
+
+    except Exception as e:
+        print(
+            f"[FLASK SEND FAIL] url={NODE_DECISION_URL}, error={e}"
+        )
+
+
 def main():
 
     sock = socket.socket(
@@ -169,7 +260,9 @@ def main():
     print("ReGrid 실시간 AI 고장 판단 시작")
     print("UDP 수신:", f"{UDP_IP}:{UDP_PORT}")
     print("MODEL:", MODEL_PATH)
-    print("OUTPUT:", f"{OUTPUT_MODE} - Flask/Simulink 제어 입력으로 전송하지 않음")
+    print("OUTPUT:", OUTPUT_MODE)
+    print("NODE:", MY_NODE)
+    print("FLASK:", NODE_DECISION_URL)
     print("================================")
 
     while True:
@@ -196,8 +289,6 @@ def main():
             sound=sound
         )
 
-        # 예측 결과는 현재 터미널 표시와 추후 n8n 이벤트 확장용이다.
-        # Flask /preset 또는 Simulink 제어 입력으로는 보내지 않는다.
         print(
             f"from {addr} | "
             f"Ia={Ia:.3f}, "
@@ -208,6 +299,9 @@ def main():
             f"=> AI 예측: "
             f"{fault_code} ({fault_name})"
         )
+
+        if OUTPUT_MODE == "terminal_and_flask":
+            send_to_flask(fault_code, fault_name)
 
 
 if __name__ == "__main__":

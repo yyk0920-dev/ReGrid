@@ -2,6 +2,8 @@ import os
 import sys
 import threading
 import time
+import socket
+import struct
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -47,15 +49,68 @@ ESS_BLOCK = f"{MODEL_NAME}/ess_cmd"
 
 DEFAULT_VOLTAGE = 12.0
 POWER_OFF_VOLTAGE = 0.0
+
+# 기존 버튼/수동 제어는 기본적으로 로컬에서만 허용
 CONTROL_ALLOWED_CLIENTS = {
     item.strip()
     for item in os.environ.get("REGRID_CONTROL_ALLOWED_CLIENTS", "127.0.0.1,::1").split(",")
     if item.strip()
 }
 
+# =========================
+# RPi 판단값 → Simulink 릴레이 UDP 제어 설정
+# =========================
+# Flask와 Simulink가 같은 노트북에서 실행되므로 127.0.0.1 사용
+# 만약 Simulink UDP Receive의 Remote address를 192.168.137.1로 잡았으면
+# 여기를 "192.168.137.1"로 바꿔도 됨.
+SIMULINK_RELAY_IP = "127.0.0.1"
+
+# Simulink 안의 각 노드 릴레이 UDP Receive Local Port
+NODE_TO_SIM_PORT = {
+    "A": 6006,
+    "B": 6002,
+    "C": 6003,
+}
+
+# Simulink UDP Receive의 Remote Port와 맞출 Flask 송신 포트
+# Simulink 쪽 Remote port도 아래 값과 맞춰야 함.
+NODE_TO_SOURCE_PORT = {
+    "A": 5006,
+    "B": 5002,
+    "C": 5003,
+}
+
+# 각 노드가 보내준 판단값 저장
+# fault_code: 0 정상, 1~9 고장
+# relay_decision: 0 연결 유지, 1 차단 필요
+node_decisions = {
+    "A": {
+        "fault_code": 0,
+        "relay_decision": 0,
+        "final_code": 0,
+        "source": "init",
+        "updated_at": None,
+    },
+    "B": {
+        "fault_code": 0,
+        "relay_decision": 0,
+        "final_code": 0,
+        "source": "init",
+        "updated_at": None,
+    },
+    "C": {
+        "fault_code": 0,
+        "relay_decision": 0,
+        "final_code": 0,
+        "source": "init",
+        "updated_at": None,
+    },
+}
+
 eng = None
 eng_lock = threading.Lock()
 camera_lock = threading.Lock()
+relay_lock = threading.Lock()
 
 try:
     model = YOLO(BASE_DIR / "spark.pt")
@@ -171,6 +226,64 @@ def send_to_simulink(voltage, code, print_log=False, label=None):
         )
 
 
+def send_relay_to_simulink(node, final_code):
+    """
+    Flask가 Simulink 안의 각 노드 릴레이 UDP Receive로 최종 차단/복구 명령을 보냄.
+
+    Simulink relay_logic 기준:
+    final_code = 0   → relay_logic 출력 1 → 스위치 닫힘 / 노드 연결
+    final_code = 1~9 → relay_logic 출력 0 → 스위치 열림 / 노드 차단
+    """
+    node = str(node).upper()
+
+    if node not in NODE_TO_SIM_PORT:
+        raise ValueError(f"invalid node: {node}")
+
+    sim_port = NODE_TO_SIM_PORT[node]
+    source_port = NODE_TO_SOURCE_PORT[node]
+    final_code = int(final_code)
+
+    data = struct.pack("<f", float(final_code))
+
+    with relay_lock:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        try:
+            # Windows에서 반복 실행 시 포트 재사용 문제 완화
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            # Simulink UDP Receive의 Remote port와 맞추기 위해 송신 포트 고정
+            sock.bind(("0.0.0.0", source_port))
+            sock.sendto(data, (SIMULINK_RELAY_IP, sim_port))
+
+            print(
+                f"[RELAY->SIMULINK] node={node}, final_code={final_code}, "
+                f"src_port={source_port}, dst={SIMULINK_RELAY_IP}:{sim_port}",
+                flush=True,
+            )
+
+        finally:
+            sock.close()
+
+
+def decide_final_code(fault_code, relay_decision):
+    """
+    최종 판단 로직.
+    지금은 단순 버전:
+    - relay_decision == 1 이거나 fault_code가 1~9면 차단
+    - 둘 다 아니면 복구
+    """
+    fault_code = int(fault_code)
+    relay_decision = int(relay_decision)
+
+    if relay_decision == 1 or (1 <= fault_code <= 9):
+        if 1 <= fault_code <= 9:
+            return fault_code
+        return 1
+
+    return 0
+
+
 def is_control_client_allowed():
     return "*" in CONTROL_ALLOWED_CLIENTS or request.remote_addr in CONTROL_ALLOWED_CLIENTS
 
@@ -225,6 +338,7 @@ def make_response():
         "command_desc": command_desc,
         "ai": state["ai"],
         "camera_mode": state["camera_mode"],
+        "node_decisions": node_decisions,
     }
 
 
@@ -443,6 +557,149 @@ def manual():
 
 
 # =========================
+# 팀원 RPi 판단값 수신 API
+# =========================
+@app.route("/node_decision", methods=["POST"])
+def node_decision():
+    """
+    팀원 RPi가 자기 노드의 고장 예측/릴레이 판단 결과를 Flask로 보내는 경로.
+
+    요청 JSON 예시:
+    {
+        "node": "B",
+        "fault_code": 2,
+        "relay_decision": 1
+    }
+
+    의미:
+    node = A/B/C
+    fault_code = 0 정상, 1~9 고장
+    relay_decision = 0 연결 유지, 1 차단 필요
+    """
+    data = request.get_json(silent=True) or {}
+
+    node = str(data.get("node", "")).strip().upper()
+
+    try:
+        fault_code = int(float(data.get("fault_code", 0)))
+    except (TypeError, ValueError):
+        fault_code = 0
+
+    try:
+        relay_decision = int(float(data.get("relay_decision", 0)))
+    except (TypeError, ValueError):
+        relay_decision = 0
+
+    if node not in node_decisions:
+        return jsonify({
+            "ok": False,
+            "error": "invalid node",
+            "allowed_nodes": list(node_decisions.keys()),
+        }), 400
+
+    if fault_code < 0:
+        fault_code = 0
+
+    if fault_code > 9:
+        fault_code = 9
+
+    relay_decision = 1 if relay_decision else 0
+
+    final_code = decide_final_code(fault_code, relay_decision)
+
+    node_decisions[node] = {
+        "fault_code": fault_code,
+        "relay_decision": relay_decision,
+        "final_code": final_code,
+        "source": request.remote_addr,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    print(
+        f"[NODE DECISION] remote={request.remote_addr}, "
+        f"node={node}, fault_code={fault_code}, "
+        f"relay_decision={relay_decision}, final_code={final_code}",
+        flush=True,
+    )
+
+    try:
+        send_relay_to_simulink(node, final_code)
+    except Exception as e:
+        state["ai"] = f"릴레이 UDP 전송 오류: {e}"
+        print(f"[ERROR] relay send failed: {e}", flush=True)
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "node": node,
+            "fault_code": fault_code,
+            "relay_decision": relay_decision,
+            "final_code": final_code,
+            "node_decisions": node_decisions,
+        }), 503
+
+    state["ai"] = (
+        f"노드 {node} 판단 수신: "
+        f"fault_code={fault_code}, relay={relay_decision}, final={final_code}"
+    )
+
+    return jsonify({
+        "ok": True,
+        "node": node,
+        "fault_code": fault_code,
+        "relay_decision": relay_decision,
+        "final_code": final_code,
+        "node_decisions": node_decisions,
+    })
+
+
+@app.route("/node_decisions", methods=["GET"])
+def get_node_decisions():
+    return jsonify({
+        "ok": True,
+        "node_decisions": node_decisions,
+    })
+
+
+@app.route("/node_decision/reset", methods=["POST"])
+def reset_node_decisions():
+    """
+    전체 노드 판단값 초기화 + Simulink 릴레이 전체 복구.
+    팀원 RPi 테스트 후 한 번에 복구할 때 사용.
+    """
+    for node in node_decisions:
+        node_decisions[node] = {
+            "fault_code": 0,
+            "relay_decision": 0,
+            "final_code": 0,
+            "source": request.remote_addr,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    errors = {}
+
+    for node in ["A", "B", "C"]:
+        try:
+            send_relay_to_simulink(node, 0)
+        except Exception as e:
+            errors[node] = str(e)
+
+    if errors:
+        return jsonify({
+            "ok": False,
+            "error": "some relay reset commands failed",
+            "errors": errors,
+            "node_decisions": node_decisions,
+        }), 503
+
+    state["ai"] = "전체 노드 릴레이 판단 초기화"
+
+    return jsonify({
+        "ok": True,
+        "node_decisions": node_decisions,
+    })
+
+
+# =========================
 # YOLO 카메라 제어 라우트
 # =========================
 @app.route("/camera/on", methods=["POST", "GET"])
@@ -565,6 +822,9 @@ def set_ess(cmd):
 # =========================
 if __name__ == "__main__":
     print("Flask server starting. MATLAB connects on the first control request.")
+    print("RPi node decision API:")
+    print("  POST http://<192.168.137.1>:8000/node_decision")
+    print("  GET  http://<192.168.137.1>:8000/node_decisions")
     app.run(
         host="0.0.0.0",
         port=8000,
