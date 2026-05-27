@@ -1,46 +1,91 @@
+import os
+import joblib
 import pandas as pd
-from sklearn.model_selection import train_test_split
+
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
-import pickle
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
-# 데이터 읽기
-df = pd.read_csv("data/regrid_data.csv")
+DATA_PATH = "data/regrid_real_data.csv"
+MODEL_PATH = "models/random_forest_fault_classifier.pkl"
 
-# 입력값
-X = df[["A", "B", "C"]]
+os.makedirs("models", exist_ok=True)
 
-# 정답값
-y = df["label"]
+fault_names = {
+    0: "NORMAL / 정상",
+    1: "F1 / 3상 단락",
+    2: "F2 / A-B 단락",
+    3: "F3 / B-C 단락",
+    4: "F4 / C-A 단락",
+    5: "F5 / A상 지락",
+    6: "F6 / B상 지락",
+    7: "F7 / C상 지락",
+    8: "F8 / 과열",
+    9: "F9 / 스파크"
+}
 
-# 학습용 / 테스트용 나누기
+df = pd.read_csv(DATA_PATH)
+df = df.dropna()
+
+features = ["Ia", "Ib", "Ic", "temperature", "sound"]
+target = "fault_code"
+
+X = df[features]
+y = df[target].astype(int)
+
+print("================================")
+print("학습 데이터 확인")
+print("================================")
+print("전체 데이터 개수:", len(df))
+print()
+print("라벨별 개수:")
+print(y.value_counts().sort_index())
+print()
+print("라벨별 평균값:")
+print(df.groupby("fault_code")[features].mean())
+print()
+print("라벨별 표준편차:")
+print(df.groupby("fault_code")[features].std())
+print()
+
 X_train, X_test, y_train, y_test = train_test_split(
     X,
     y,
     test_size=0.2,
-    random_state=42
-)
-
-# RandomForest 모델 생성
-model = RandomForestClassifier(
-    n_estimators=100,   # 결정트리 개수
-    max_depth=None,     # 트리 깊이 제한 없음
     random_state=42,
-    n_jobs=-1           # CPU 코어 최대 사용
+    stratify=y
 )
 
-# 학습
+model = RandomForestClassifier(
+    n_estimators=300,
+    random_state=42,
+    class_weight="balanced"
+)
+
 model.fit(X_train, y_train)
 
-# 테스트
-pred = model.predict(X_test)
+y_pred = model.predict(X_test)
 
-# 정확도 출력
-accuracy = accuracy_score(y_test, pred)
-print("정확도:", accuracy)
+labels = sorted(y.unique())
+target_names = [fault_names[i] for i in labels]
 
-# 모델 저장
-with open("models/regrid_model.pkl", "wb") as f:
-    pickle.dump(model, f)
+print("================================")
+print("Random Forest 고장 유형 분류 결과")
+print("================================")
+print("정확도:", accuracy_score(y_test, y_pred))
+print()
+print("분류 리포트")
+print(classification_report(
+    y_test,
+    y_pred,
+    labels=labels,
+    target_names=target_names
+))
+print()
+print("혼동 행렬")
+print(confusion_matrix(y_test, y_pred, labels=labels))
 
-print("모델 저장 완료: models/regrid_model.pkl")
+joblib.dump(model, MODEL_PATH)
+
+print()
+print("모델 저장 완료:", MODEL_PATH)

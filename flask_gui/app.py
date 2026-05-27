@@ -1,106 +1,434 @@
-import socket
-import struct
+import os
+import sys
+import threading
+import time
+from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent
+VENV_PYTHON = PROJECT_DIR / ".venv" / "Scripts" / "python.exe"
+
+
+def use_project_venv_when_run_directly():
+    running_this_file = Path(sys.argv[0]).resolve() == Path(__file__).resolve()
+    already_using_venv = Path(sys.executable).resolve() == VENV_PYTHON.resolve()
+
+    if (
+        running_this_file
+        and VENV_PYTHON.exists()
+        and not already_using_venv
+        and os.environ.get("REGRID_VENV_BOOTSTRAPPED") != "1"
+    ):
+        os.environ["REGRID_VENV_BOOTSTRAPPED"] = "1"
+        os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), *sys.argv])
+
+
+use_project_venv_when_run_directly()
+
+import cv2
+from flask import Flask, Response, jsonify, render_template, request
+import matlab.engine
+from ultralytics import YOLO
+
 
 app = Flask(__name__)
 
-UDP_IP = "127.0.0.1"
-UDP_PORT = 5000
+# =========================
+# Simulink / MATLAB 설정
+# =========================
+MODEL_PATH = r"C:\Users\20240620-LapTop\Documents\카카오톡 받은 파일\circuit4.slx"
+MODEL_NAME = "circuit4"
+ENGINE_NAME = "ReGridEngine"
+MATLAB_START_OPTIONS = "-desktop -nosplash"
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+VOLTAGE_BLOCK = f"{MODEL_NAME}/voltage_cmd"
+FAULT_BLOCK = f"{MODEL_NAME}/fault_code_cmd"
+ESS_BLOCK = f"{MODEL_NAME}/ess_cmd"
 
-current_state = {
-    "label": "RESET",
-    "desc": "정상상태",
-    "voltage": 12.0,
-    "current": 1.0,
+DEFAULT_VOLTAGE = 12.0
+POWER_OFF_VOLTAGE = 0.0
+
+eng = None
+eng_lock = threading.Lock()
+
+try:
+    model = YOLO(BASE_DIR / "spark.pt")
+    print("spark.pt loaded")
+except Exception as e:
+    print(f"spark.pt load failed: {e}")
+    model = YOLO(BASE_DIR / "yolov8n.pt")
+
+SPARK_COOLDOWN_SEC = 3.0
+last_spark_time = 0.0
+
+
+# =========================
+# 현재 상태
+# =========================
+state = {
+    "power": True,
+    "voltage": DEFAULT_VOLTAGE,
+    "code": 0,
+    "label": "POWER ON",
+    "desc": "정상 전원 인가",
+    "ai": "대기 중",
+    "camera_mode": False,
 }
 
-# code: (label, desc, voltage, current)
-# 여기 값은 네가 원하는 임의의 V, I 값으로 바꾸면 됨
 faults = {
-    0: ("RESET", "정상상태", 12.0, 1.0),
-    1: ("F1", "3상 단락", 6.0, 8.0),
-    2: ("F2", "A-B 단락", 8.0, 6.5),
-    3: ("F3", "B-C 단락", 8.5, 6.0),
-    4: ("F4", "C-A 단락", 8.0, 6.0),
-    5: ("F5", "A상 지락", 9.0, 4.5),
-    6: ("F6", "B상 지락", 9.2, 4.2),
-    7: ("F7", "C상 지락", 9.5, 4.0),
-    8: ("TEMP", "온도 높음", 12.0, 3.0),
-    9: ("SPARK", "스파크 감지 / 화재+소리", 5.0, 7.0),
+    0: ("RESET", "고장 해제 / 정상상태"),
+    1: ("F1", "3상 단락"),
+    2: ("F2", "A-B 단락"),
+    3: ("F3", "B-C 단락"),
+    4: ("F4", "C-A 단락"),
+    5: ("F5", "A상 지락"),
+    6: ("F6", "B상 지락"),
+    7: ("F7", "C상 지락"),
+    8: ("TEMP", "온도 높음"),
+    9: ("SPARK", "스파크 감지"),
 }
 
 
-def send_vi_udp(voltage, current):
-    """
-    voltage, current를 float 2개로 UDP 전송.
-    Simulink UDP Receive:
-    - Data type: single
-    - Data size: [1 2]
-    """
-    msg = struct.pack(">ff", float(voltage), float(current))
-    sock.sendto(msg, (UDP_IP, UDP_PORT))
+# =========================
+# MATLAB Engine 초기화
+# =========================
+def init_matlab():
+    global eng
+
+    if eng is not None:
+        return eng
+
+    print("Connecting to MATLAB Engine...")
+
+    names = matlab.engine.find_matlab()
+    print("Available MATLAB engines:", names)
+
+    if ENGINE_NAME in names:
+        try:
+            eng = matlab.engine.connect_matlab(ENGINE_NAME)
+            print(f"Connected to existing MATLAB: {ENGINE_NAME}")
+        except Exception as e:
+            print(f"Failed to connect to shared MATLAB {ENGINE_NAME}: {e}")
+
+    if eng is None:
+        try:
+            print("Starting a MATLAB Engine in this Python session...")
+            eng = matlab.engine.start_matlab(MATLAB_START_OPTIONS)
+            print("Started MATLAB Engine")
+        except Exception as e:
+            raise RuntimeError(
+                "MATLAB Engine 연결에 실패했습니다. MATLAB과 이 터미널의 권한을 "
+                "같게 맞추거나 관리자 PowerShell에서 실행하세요."
+            ) from e
+
+    # 이미 열려 있는 모델에 붙거나, 새 엔진이면 모델을 로드합니다.
+    eng.load_system(MODEL_PATH, nargout=0)
+
+    print("MATLAB Engine ready")
+    return eng
 
 
+def send_to_simulink(voltage, code, print_log=False):
+    with eng_lock:
+        engine = init_matlab()
+
+        engine.set_param(
+            VOLTAGE_BLOCK,
+            "Value",
+            str(float(voltage)),
+            nargout=0,
+        )
+
+        engine.set_param(
+            FAULT_BLOCK,
+            "Value",
+            str(float(code)),
+            nargout=0,
+        )
+
+        v_read = engine.get_param(VOLTAGE_BLOCK, "Value")
+        c_read = engine.get_param(FAULT_BLOCK, "Value")
+
+    print(
+        f"Simulink read-back | "
+        f"voltage_cmd={v_read}, fault_code_cmd={c_read}"
+    )
+
+    if print_log:
+        print(
+            f"Simulink updated | "
+            f"voltage={float(voltage)}, "
+            f"code={float(code)}, "
+            f"label={state['label']}"
+        )
+
+
+# =========================
+# 응답 함수
+# =========================
+def make_response():
+    return {
+        "ok": True,
+        "power": state["power"],
+        "voltage": state["voltage"],
+        "code": state["code"],
+        "label": state["label"],
+        "desc": state["desc"],
+        "ai": state["ai"],
+        "camera_mode": state["camera_mode"],
+    }
+
+
+def action_response(action):
+    try:
+        action()
+    except Exception as e:
+        state["ai"] = f"MATLAB 연결 오류: {e}"
+        print(f"MATLAB action error: {e}")
+        return jsonify({
+            **make_response(),
+            "ok": False,
+            "error": str(e),
+        }), 503
+
+    return jsonify(make_response())
+
+
+# =========================
+# 상태 변경 함수
+# =========================
+def set_fault(code, ai_text="고장 버튼 입력"):
+    if code not in faults:
+        code = 0
+
+    label, desc = faults[code]
+
+    # F1~F9 / RESET은 전원을 끄는 게 아니라
+    # 12V는 유지하고 fault_code만 바꾸는 구조
+    state["power"] = True
+    state["voltage"] = DEFAULT_VOLTAGE
+    state["code"] = int(code)
+    state["label"] = label
+    state["desc"] = desc
+    state["ai"] = ai_text
+
+    send_to_simulink(state["voltage"], state["code"], print_log=True)
+
+
+def set_power_on():
+    state["power"] = True
+    state["voltage"] = DEFAULT_VOLTAGE
+    state["code"] = 0
+    state["label"] = "POWER ON"
+    state["desc"] = "정상 전원 인가"
+    state["ai"] = "전원 ON"
+
+    send_to_simulink(state["voltage"], state["code"], print_log=True)
+
+
+def set_power_off():
+    state["power"] = False
+    state["voltage"] = POWER_OFF_VOLTAGE
+    state["code"] = 0
+    state["label"] = "POWER OFF"
+    state["desc"] = "전원 차단"
+    state["ai"] = "전원 OFF"
+
+    send_to_simulink(state["voltage"], state["code"], print_log=True)
+
+
+def trigger_spark():
+    global last_spark_time
+
+    if not state["camera_mode"]:
+        return
+
+    now = time.time()
+
+    if now - last_spark_time < SPARK_COOLDOWN_SEC:
+        return
+
+    last_spark_time = now
+    set_fault(9, "스파크 감지됨")
+
+
+# =========================
+# Flask 라우트
+# =========================
 @app.route("/")
 def index():
-    return render_template("index.html", faults=faults, state=current_state)
+    return render_template("index.html", faults=faults, state=state)
+
+
+@app.route("/state")
+def get_state():
+    return jsonify(make_response())
 
 
 @app.route("/preset/<int:code>", methods=["POST"])
-def send_preset(code):
+def preset(code):
     if code not in faults:
-        return jsonify({"ok": False, "error": "Invalid preset code"}), 400
+        return jsonify({"ok": False, "error": "invalid code"}), 400
 
-    label, desc, voltage, current = faults[code]
+    return action_response(lambda: set_fault(code, "고장 버튼 입력"))
 
-    send_vi_udp(voltage, current)
 
-    current_state["label"] = label
-    current_state["desc"] = desc
-    current_state["voltage"] = voltage
-    current_state["current"] = current
+@app.route("/reset", methods=["POST"])
+def reset():
+    return action_response(lambda: set_fault(0, "고장 해제"))
 
-    print(f"Sent UDP: {label} / V={voltage}, I={current}")
 
-    return jsonify({
-        "ok": True,
-        "label": label,
-        "desc": desc,
-        "voltage": voltage,
-        "current": current
-    })
+@app.route("/power/on", methods=["POST"])
+def power_on():
+    return action_response(set_power_on)
+
+
+@app.route("/power/off", methods=["POST"])
+def power_off():
+    return action_response(set_power_off)
 
 
 @app.route("/manual", methods=["POST"])
-def send_manual():
-    data = request.get_json()
+def manual():
+    data = request.get_json() or {}
 
     try:
-        voltage = float(data.get("voltage"))
-        current = float(data.get("current"))
+        voltage = float(data.get("voltage", state["voltage"]))
     except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "Invalid voltage/current"}), 400
+        return jsonify({"ok": False, "error": "invalid voltage"}), 400
 
-    send_vi_udp(voltage, current)
+    try:
+        code = int(data.get("code", state["code"]))
+    except (TypeError, ValueError):
+        code = 0
 
-    current_state["label"] = "MANUAL"
-    current_state["desc"] = "직접 입력"
-    current_state["voltage"] = voltage
-    current_state["current"] = current
+    if code not in faults:
+        code = 0
 
-    print(f"Sent UDP: MANUAL / V={voltage}, I={current}")
+    label, desc = faults[code]
 
-    return jsonify({
-        "ok": True,
-        "label": "MANUAL",
-        "desc": "직접 입력",
-        "voltage": voltage,
-        "current": current
-    })
+    state["voltage"] = voltage
+    state["power"] = voltage > 0
+    state["code"] = code
+    state["label"] = label
+    state["desc"] = desc
+    state["ai"] = "직접 입력"
+
+    return action_response(
+        lambda: send_to_simulink(state["voltage"], state["code"], print_log=True)
+    )
 
 
+# =========================
+# YOLO 카메라 제어
+# =========================
+@app.route("/camera/on", methods=["POST"])
+def camera_on():
+    state["camera_mode"] = True
+    state["ai"] = "카메라 ON"
+    return jsonify(make_response())
+
+
+@app.route("/camera/off", methods=["POST"])
+def camera_off():
+    state["camera_mode"] = False
+    state["ai"] = "카메라 OFF"
+    return jsonify(make_response())
+
+
+@app.route("/camera_mode", methods=["GET", "POST"])
+def camera_mode():
+    if request.method == "GET":
+        return jsonify(make_response())
+
+    data = request.get_json() or {}
+    enabled = bool(data.get("enabled", False))
+
+    state["camera_mode"] = enabled
+    state["ai"] = "카메라 ON" if enabled else "카메라 OFF"
+
+    return jsonify(make_response())
+
+
+def generate_frames():
+    camera = cv2.VideoCapture(0)
+
+    if not camera.isOpened():
+        print("camera open failed")
+        return
+
+    try:
+        while True:
+            success, frame = camera.read()
+
+            if not success:
+                break
+
+            output_frame = frame
+
+            if state["camera_mode"]:
+                results = model(frame, conf=0.4, verbose=False)
+                output_frame = results[0].plot()
+
+                if len(results[0].boxes) > 0:
+                    trigger_spark()
+                else:
+                    state["ai"] = "카메라 ON"
+
+            ret, buffer = cv2.imencode(".jpg", output_frame)
+
+            if not ret:
+                continue
+
+            frame_bytes = buffer.tobytes()
+
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n"
+                + frame_bytes
+                + b"\r\n"
+            )
+    finally:
+        camera.release()
+
+
+@app.route("/video_feed")
+def video_feed():
+    return Response(
+        generate_frames(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
+
+@app.post("/ess/<int:cmd>")
+def set_ess(cmd):
+    cmd = 1 if cmd else 0
+
+    def update_ess():
+        with eng_lock:
+            engine = init_matlab()
+            engine.set_param(ESS_BLOCK, "Value", str(cmd), nargout=0)
+            readback = engine.get_param(ESS_BLOCK, "Value")
+
+        print(f"ESS updated | ess_cmd={readback}", flush=True)
+        return readback
+
+    try:
+        readback = update_ess()
+    except Exception as e:
+        state["ai"] = f"MATLAB 연결 오류: {e}"
+        print(f"ESS update error: {e}", flush=True)
+        return jsonify({"ok": False, "ess_cmd": cmd, "error": str(e)}), 503
+
+    return jsonify({"ok": True, "ess_cmd": cmd, "readback": readback})
+
+# =========================
+# 실행부
+# =========================
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=8000, debug=True)
+    print("Flask server starting. MATLAB connects on the first control request.")
+    app.run(
+        host="127.0.0.1",
+        port=8000,
+        debug=True,
+        use_reloader=False,
+    )
