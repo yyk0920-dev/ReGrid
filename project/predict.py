@@ -1,23 +1,11 @@
 import joblib
 import pandas as pd
-import requests
 
 # =========================
 # 모델 경로
 # =========================
 
 MODEL_PATH = "models/random_forest_fault_classifier.pkl"
-
-# =========================
-# PC Flask 서버 주소
-# =========================
-# 같은 PC에서 테스트할 때:
-# PC_URL = "http://127.0.0.1:8000"
-
-# 라즈베리파이에서 PC로 보낼 때:
-# PC_URL = "http://192.168.137.1:8000"
-
-PC_URL = "http://127.0.0.1:8000"
 # =========================
 # 고장 코드 이름
 # =========================
@@ -44,41 +32,28 @@ model = joblib.load(MODEL_PATH)
 
 
 # =========================
-# PC Flask로 fault_code 전송
+# 예측 결과 외부 전송
 # =========================
 
 def send_fault_code(fault_code):
     """
-    예측된 fault_code를 PC Flask app.py로 전송한다.
+    예측 결과는 Flask 제어 입력과 연결하지 않는다.
 
-    PC app.py에 /preset/<code> 라우트가 있어야 함.
-    예:
-    http://192.168.137.1:8000/preset/4
+    이 함수는 예전 호출부 호환용으로만 남겨둔다.
+    추후 n8n 같은 외부 연동이 필요하면 Flask /preset이 아니라
+    별도 이벤트 전송 경로를 만들어 사용한다.
     """
-
-    try:
-        r = requests.post(f"{PC_URL}/preset/{fault_code}", timeout=2)
-
-        print("--------------------------------")
-        print("PC Flask 전송 결과")
-        print("status_code:", r.status_code)
-        print("response:", r.text)
-
-    except Exception as e:
-        print("--------------------------------")
-        print("PC Flask 전송 실패:", e)
-        print("확인할 것:")
-        print("1. PC에서 app.py가 실행 중인지 확인")
-        print("2. PC와 RPi가 같은 네트워크에 있는지 확인")
-        print("3. PC_URL이 PC IP와 맞는지 확인")
-        print("4. app.py에 /preset/<code> 라우트가 있는지 확인")
+    print("--------------------------------")
+    print("Flask 전송 안 함")
+    print("예측 fault_code:", fault_code)
+    print("예측 결과는 터미널 출력과 반환값으로만 사용합니다.")
 
 
 # =========================
 # AI 고장 유형 분류
 # =========================
 
-def predict_fault_type(Ia, Ib, Ic, temperature, spark_detected, send_to_pc=True):
+def predict_fault_type(Ia, Ib, Ic, temperature, spark_detected, send_to_pc=False):
     """
     AI 역할:
     센서값을 입력받아 F1~F9 고장 유형만 분류한다.
@@ -89,7 +64,7 @@ def predict_fault_type(Ia, Ib, Ic, temperature, spark_detected, send_to_pc=True)
     Ic: C상 전류
     temperature: 온도값
     spark_detected: YOLO 스파크 감지 결과, 0 또는 1
-    send_to_pc: True면 예측된 fault_code를 PC Flask로 전송
+    send_to_pc: 호환용 인자. True여도 Flask로 전송하지 않음.
 
     출력:
     fault_code: 0~9
@@ -139,5 +114,5 @@ if __name__ == "__main__":
         Ic=6.8,
         temperature=35,
         spark_detected=0,
-        send_to_pc=True
+        send_to_pc=False
     )
