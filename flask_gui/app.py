@@ -61,7 +61,6 @@ except Exception as e:
 
 SPARK_COOLDOWN_SEC = 3.0
 last_spark_time = 0.0
-spark_update_running = False
 
 
 # =========================
@@ -170,6 +169,12 @@ def send_to_simulink(voltage, code, print_log=False):
 # 응답 함수
 # =========================
 def make_response():
+    command_label = f"{state['label']} 입력"
+    command_desc = (
+        f"Simulink voltage_cmd={state['voltage']}, "
+        f"fault_code_cmd={state['code']} 전송 명령"
+    )
+
     return {
         "ok": True,
         "power": state["power"],
@@ -177,6 +182,8 @@ def make_response():
         "code": state["code"],
         "label": state["label"],
         "desc": state["desc"],
+        "command_label": command_label,
+        "command_desc": command_desc,
         "ai": state["ai"],
         "camera_mode": state["camera_mode"],
     }
@@ -241,7 +248,7 @@ def set_power_off():
 
 
 def trigger_spark():
-    global last_spark_time, spark_update_running
+    global last_spark_time
 
     with camera_lock:
         camera_enabled = state["camera_mode"]
@@ -254,29 +261,12 @@ def trigger_spark():
     if now - last_spark_time < SPARK_COOLDOWN_SEC:
         return
 
-    if spark_update_running:
-        return
-
     last_spark_time = now
-    spark_update_running = True
-
-    state["ai"] = "스파크 감지됨 - Simulink 전송 중"
-
-    def update_spark_fault():
-        global spark_update_running
-
-        try:
-            set_fault(9, "스파크 감지됨")
-        except Exception as e:
-            state["ai"] = f"스파크 전송 오류: {e}"
-            print(f"spark update error: {e}", flush=True)
-        finally:
-            spark_update_running = False
-
-    threading.Thread(
-        target=update_spark_fault,
-        daemon=True
-    ).start()
+    state["ai"] = "스파크 감지됨 - Simulink 고장코드는 변경하지 않음"
+    print(
+        "Spark detected by camera; Simulink fault_code_cmd unchanged.",
+        flush=True,
+    )
 
 
 # =========================
@@ -428,8 +418,7 @@ def generate_frames():
                 if len(results[0].boxes) > 0:
                     trigger_spark()
                 else:
-                    if not spark_update_running:
-                        state["ai"] = "카메라 ON"
+                    state["ai"] = "카메라 ON"
 
             ret, buffer = cv2.imencode(".jpg", output_frame)
 
