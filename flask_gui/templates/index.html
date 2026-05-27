@@ -95,6 +95,14 @@
             font-weight: 800;
         }
 
+        .camera-status {
+            margin-top: 10px;
+            font-size: 17px;
+            font-weight: 900;
+            color: #93c5fd;
+            font-family: Consolas, monospace;
+        }
+
         .video-title {
             font-size: 22px;
             font-weight: 900;
@@ -158,7 +166,7 @@
             cursor: pointer;
             font-size: 17px;
             font-weight: 800;
-            transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease;
+            transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
             box-shadow: 0 12px 26px rgba(0, 0, 0, 0.24);
             min-height: 92px;
         }
@@ -171,6 +179,12 @@
 
         button:active {
             transform: translateY(1px);
+        }
+
+        button:disabled {
+            cursor: wait;
+            opacity: 0.55;
+            transform: none;
         }
 
         .wide-btn {
@@ -261,6 +275,9 @@
                     <div class="ai-status" id="aiStatus">
                         AI: {{ state.ai }}
                     </div>
+                    <div class="camera-status" id="cameraStatus">
+                        CAMERA: {{ "ON" if state.camera_mode else "OFF" }}
+                    </div>
                 </div>
 
                 <div class="button-area">
@@ -277,21 +294,19 @@
                         </button>
                     </div>
 
-                    <div class="section-title">고장 해제</div>
-                    <div class="row row-2">
+                    <div class="section-title">고장 해제 / 카메라 제어</div>
+                    <div class="row row-3">
                         <button class="fault-0 wide-btn" onclick="resetFault()">
                             <span class="code">RESET</span>
                             <span class="desc">고장 스위치 해제</span>
                         </button>
 
-                        <button class="camera-on wide-btn" onclick="cameraOn()">
+                        <button id="cameraOnBtn" class="camera-on wide-btn" onclick="cameraOn()">
                             <span class="code">CAMERA ON</span>
                             <span class="desc">스파크 감지 활성화</span>
                         </button>
-                    </div>
 
-                    <div class="row row-2">
-                        <button class="camera-off wide-btn" onclick="cameraOff()">
+                        <button id="cameraOffBtn" class="camera-off wide-btn" onclick="cameraOff()">
                             <span class="code">CAMERA OFF</span>
                             <span class="desc">스파크 감지 비활성화</span>
                         </button>
@@ -357,9 +372,9 @@
                 <div class="video-card">
                     <div class="video-title">Vision AI Spark Detection</div>
                     <div class="video-box">
-                        <img src="/video_feed" alt="YOLO Video Feed">
+                        <img id="cameraFeed" src="/video_feed" alt="YOLO Video Feed">
                     </div>
-                    <div class="video-desc">
+                    <div class="video-desc" id="videoDesc">
                         CAMERA ON 상태에서 YOLO 모델이 스파크를 감지하면 SPARK 고장코드가 Simulink로 전송됩니다.
                     </div>
                 </div>
@@ -372,6 +387,16 @@
     </div>
 
     <script>
+        let busy = false;
+
+        function setBusy(value) {
+            busy = value;
+            const buttons = document.querySelectorAll("button");
+            buttons.forEach(btn => {
+                btn.disabled = value;
+            });
+        }
+
         function updateStatus(data) {
             document.getElementById("statusCode").innerText = data.label;
             document.getElementById("statusDesc").innerText = data.desc;
@@ -381,89 +406,96 @@
             if (data.ai !== undefined) {
                 document.getElementById("aiStatus").innerText = `AI: ${data.ai}`;
             }
+
+            if (data.camera_mode !== undefined) {
+                document.getElementById("cameraStatus").innerText =
+                    data.camera_mode ? "CAMERA: ON" : "CAMERA: OFF";
+
+                document.getElementById("videoDesc").innerText =
+                    data.camera_mode
+                        ? "CAMERA ON: YOLO 스파크 감지가 활성화되어 있습니다."
+                        : "CAMERA OFF: 영상은 표시되지만 YOLO 스파크 감지는 비활성화되어 있습니다.";
+            }
+        }
+
+        async function postJson(url, body = null) {
+            if (busy) return null;
+
+            setBusy(true);
+
+            try {
+                const options = {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    }
+                };
+
+                if (body !== null) {
+                    options.body = JSON.stringify(body);
+                }
+
+                const response = await fetch(url, options);
+                const data = await response.json();
+
+                console.log(url, data);
+
+                if (data.ok) {
+                    updateStatus(data);
+                } else {
+                    alert(data.error || "전송 실패");
+                }
+
+                return data;
+            } catch (error) {
+                console.error(url, error);
+                alert("서버 요청 실패: Flask가 켜져 있는지 확인해줘");
+                return null;
+            } finally {
+                setBusy(false);
+            }
         }
 
         async function sendPreset(code) {
-            const response = await fetch(`/preset/${code}`, {
-                method: "POST"
-            });
-
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
-            } else {
-                alert("전송 실패");
-            }
+            await postJson(`/preset/${code}`);
         }
 
         async function resetFault() {
-            const response = await fetch("/reset", {
-                method: "POST"
-            });
-
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
-            }
+            await postJson("/reset");
         }
 
         async function powerOn() {
-            const response = await fetch("/power/on", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    voltage: 12
-                })
+            await postJson("/power/on", {
+                voltage: 12
             });
-
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
-            }
         }
 
         async function powerOff() {
-            const response = await fetch("/power/off", {
-                method: "POST"
-            });
-
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
-            }
+            await postJson("/power/off");
         }
 
         async function cameraOn() {
-            const response = await fetch("/camera/on", {
-                method: "POST"
-            });
+            const data = await postJson("/camera/on");
 
-            const data = await response.json();
+            if (data && data.ok) {
+                const feed = document.getElementById("cameraFeed");
+                feed.src = "/video_feed?t=" + new Date().getTime();
 
-            if (data.ok) {
-                updateStatus(data);
+                alert("카메라 ON 완료");
             }
         }
 
         async function cameraOff() {
-            const response = await fetch("/camera/off", {
-                method: "POST"
-            });
+            const data = await postJson("/camera/off");
 
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
+            if (data && data.ok) {
+                alert("카메라 OFF 완료");
             }
         }
 
         async function refreshState() {
+            if (busy) return;
+
             try {
                 const response = await fetch("/state");
                 const data = await response.json();
@@ -476,6 +508,7 @@
             }
         }
 
+        refreshState();
         setInterval(refreshState, 1000);
     </script>
 </body>

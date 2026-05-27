@@ -3,15 +3,27 @@ import struct
 import joblib
 import pandas as pd
 import requests
+import numpy as np
+
+from collections import deque
 
 MODEL_PATH = "models/random_forest_fault_classifier.pkl"
 
 UDP_IP = "0.0.0.0"
 UDP_PORT = 5000
 
-# PC에서 테스트할 때는 127.0.0.1
-# RPi에서 PC Flask로 보낼 때는 PC IP
 PC_URL = "http://192.168.137.1:8000"
+
+WINDOW_SIZE = 10
+
+# 최근 데이터 저장 버퍼
+Ia_buffer = deque(maxlen=WINDOW_SIZE)
+Ib_buffer = deque(maxlen=WINDOW_SIZE)
+Ic_buffer = deque(maxlen=WINDOW_SIZE)
+
+prev_Ia = None
+prev_Ib = None
+prev_Ic = None
 
 fault_names = {
     0: "NORMAL / 정상",
@@ -29,38 +41,154 @@ fault_names = {
 model = joblib.load(MODEL_PATH)
 
 def decode_packet(data):
+
+    # float 5개
     if len(data) != 20:
-        raise ValueError(f"잘못된 데이터 길이: {len(data)} bytes, 예상: 20 bytes")
+        raise ValueError(
+            f"잘못된 데이터 길이: {len(data)} bytes"
+        )
 
     Ia, Ib, Ic, temperature, sound = struct.unpack("!5f", data)
+
     return Ia, Ib, Ic, temperature, sound
 
+
 def predict_fault(Ia, Ib, Ic, temperature, sound):
+
+    global prev_Ia
+    global prev_Ib
+    global prev_Ic
+
+    # ------------------------------------------------
+    # 버퍼 저장
+    # ------------------------------------------------
+    Ia_buffer.append(Ia)
+    Ib_buffer.append(Ib)
+    Ic_buffer.append(Ic)
+
+    # ------------------------------------------------
+    # Rolling Mean
+    # ------------------------------------------------
+    Ia_mean_10 = np.mean(Ia_buffer)
+    Ib_mean_10 = np.mean(Ib_buffer)
+    Ic_mean_10 = np.mean(Ic_buffer)
+
+    # ------------------------------------------------
+    # Rolling Variance
+    # ------------------------------------------------
+    Ia_var_10 = np.var(Ia_buffer)
+    Ib_var_10 = np.var(Ib_buffer)
+    Ic_var_10 = np.var(Ic_buffer)
+
+    # ------------------------------------------------
+    # 전류 차이 Feature
+    # ------------------------------------------------
+    Iab_diff = abs(Ia - Ib)
+    Ibc_diff = abs(Ib - Ic)
+    Ica_diff = abs(Ic - Ia)
+
+    # ------------------------------------------------
+    # 평균 / 불평형
+    # ------------------------------------------------
+    I_mean = (Ia + Ib + Ic) / 3
+
+    I_unbalance = (
+        abs(Ia - I_mean) +
+        abs(Ib - I_mean) +
+        abs(Ic - I_mean)
+    )
+
+    I_sum = Ia + Ib + Ic
+
+    # ------------------------------------------------
+    # 변화량 Feature
+    # ------------------------------------------------
+    if prev_Ia is None:
+        dIa = 0
+        dIb = 0
+        dIc = 0
+    else:
+        dIa = Ia - prev_Ia
+        dIb = Ib - prev_Ib
+        dIc = Ic - prev_Ic
+
+    prev_Ia = Ia
+    prev_Ib = Ib
+    prev_Ic = Ic
+
+    # ------------------------------------------------
+    # 모델 입력
+    # ------------------------------------------------
     input_data = pd.DataFrame([{
         "Ia": Ia,
         "Ib": Ib,
         "Ic": Ic,
+
         "temperature": temperature,
-        "sound": sound
+        "sound": sound,
+
+        "Iab_diff": Iab_diff,
+        "Ibc_diff": Ibc_diff,
+        "Ica_diff": Ica_diff,
+
+        "I_mean": I_mean,
+        "I_unbalance": I_unbalance,
+        "I_sum": I_sum,
+
+        "Ia_mean_10": Ia_mean_10,
+        "Ib_mean_10": Ib_mean_10,
+        "Ic_mean_10": Ic_mean_10,
+
+        "Ia_var_10": Ia_var_10,
+        "Ib_var_10": Ib_var_10,
+        "Ic_var_10": Ic_var_10,
+
+        "dIa": dIa,
+        "dIb": dIb,
+        "dIc": dIc
     }])
 
     fault_code = int(model.predict(input_data)[0])
-    fault_name = fault_names.get(fault_code, "UNKNOWN")
+
+    fault_name = fault_names.get(
+        fault_code,
+        "UNKNOWN"
+    )
+
     return fault_code, fault_name
 
+
 def send_fault_code(fault_code):
+
     try:
-        r = requests.post(f"{PC_URL}/preset/{fault_code}", timeout=10)
-        print(f"[PC SEND] /preset/{fault_code} status={r.status_code}")
+
+        r = requests.post(
+            f"{PC_URL}/preset/{fault_code}",
+            timeout=10
+        )
+
+        print(
+            f"[PC SEND] "
+            f"/preset/{fault_code} "
+            f"status={r.status_code}"
+        )
+
     except Exception as e:
+
         print("[PC SEND FAIL]", e)
 
+
 def main():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    sock = socket.socket(
+        socket.AF_INET,
+        socket.SOCK_DGRAM
+    )
+
     sock.bind((UDP_IP, UDP_PORT))
 
     print("================================")
-    print("ReGrid 실시간 AI 고장 유형 판단 시작")
+    print("ReGrid 실시간 AI 고장 판단 시작")
     print("UDP 수신:", f"{UDP_IP}:{UDP_PORT}")
     print("MODEL:", MODEL_PATH)
     print("================================")
@@ -68,14 +196,21 @@ def main():
     last_fault_code = None
 
     while True:
+
         data, addr = sock.recvfrom(1024)
 
         try:
+
             Ia, Ib, Ic, temperature, sound = decode_packet(data)
+
         except Exception as e:
+
             print("[WARN] decode 실패:", e)
             continue
 
+        # ----------------------------------------
+        # AI 예측
+        # ----------------------------------------
         fault_code, fault_name = predict_fault(
             Ia=Ia,
             Ib=Ib,
@@ -86,15 +221,24 @@ def main():
 
         print(
             f"from {addr} | "
-            f"Ia={Ia:.3f}, Ib={Ib:.3f}, Ic={Ic:.3f}, "
-            f"TEMP={temperature:.2f}, SOUND={sound:.2f} "
-            f"=> AI 예측: {fault_code}({fault_name})"
+            f"Ia={Ia:.3f}, "
+            f"Ib={Ib:.3f}, "
+            f"Ic={Ic:.3f}, "
+            f"TEMP={temperature:.2f}, "
+            f"SOUND={sound:.2f} "
+            f"=> AI 예측: "
+            f"{fault_code} ({fault_name})"
         )
 
-        # fault_code가 바뀔 때만 PC Flask로 전송
+        # ----------------------------------------
+        # fault_code 바뀔 때만 Flask 전송
+        # ----------------------------------------
         if fault_code != last_fault_code:
+
             send_fault_code(fault_code)
+
             last_fault_code = fault_code
+
 
 if __name__ == "__main__":
     main()
