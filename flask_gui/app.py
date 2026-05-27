@@ -47,6 +47,11 @@ ESS_BLOCK = f"{MODEL_NAME}/ess_cmd"
 
 DEFAULT_VOLTAGE = 12.0
 POWER_OFF_VOLTAGE = 0.0
+CONTROL_ALLOWED_CLIENTS = {
+    item.strip()
+    for item in os.environ.get("REGRID_CONTROL_ALLOWED_CLIENTS", "127.0.0.1,::1").split(",")
+    if item.strip()
+}
 
 eng = None
 eng_lock = threading.Lock()
@@ -128,7 +133,7 @@ def init_matlab():
     return eng
 
 
-def send_to_simulink(voltage, code, print_log=False):
+def send_to_simulink(voltage, code, print_log=False, label=None):
     with eng_lock:
         engine = init_matlab()
 
@@ -156,13 +161,47 @@ def send_to_simulink(voltage, code, print_log=False):
     )
 
     if print_log:
+        log_label = label if label is not None else state["label"]
         print(
             f"Simulink updated | "
             f"voltage={float(voltage)}, "
             f"code={float(code)}, "
-            f"label={state['label']}",
+            f"label={log_label}",
             flush=True,
         )
+
+
+def is_control_client_allowed():
+    return "*" in CONTROL_ALLOWED_CLIENTS or request.remote_addr in CONTROL_ALLOWED_CLIENTS
+
+
+def reject_remote_control(action):
+    print(
+        f"Blocked control request | "
+        f"action={action}, remote={request.remote_addr}, path={request.path}",
+        flush=True,
+    )
+    return jsonify({
+        "ok": False,
+        "error": "control endpoints are local-only",
+        "remote": request.remote_addr,
+    }), 403
+
+
+def log_control_request(action):
+    print(
+        f"Control request | "
+        f"action={action}, remote={request.remote_addr}, path={request.path}",
+        flush=True,
+    )
+
+
+def require_local_control(action):
+    if not is_control_client_allowed():
+        return reject_remote_control(action)
+
+    log_control_request(action)
+    return None
 
 
 # =========================
@@ -222,7 +261,7 @@ def set_fault(code, ai_text="고장 버튼 입력"):
     state["desc"] = desc
     state["ai"] = ai_text
 
-    send_to_simulink(state["voltage"], state["code"], print_log=True)
+    send_to_simulink(state["voltage"], state["code"], print_log=True, label=label)
 
 
 def set_power_on():
@@ -233,7 +272,12 @@ def set_power_on():
     state["desc"] = "정상 전원 인가"
     state["ai"] = "전원 ON"
 
-    send_to_simulink(state["voltage"], state["code"], print_log=True)
+    send_to_simulink(
+        state["voltage"],
+        state["code"],
+        print_log=True,
+        label=state["label"],
+    )
 
 
 def set_power_off():
@@ -244,7 +288,12 @@ def set_power_off():
     state["desc"] = "전원 차단"
     state["ai"] = "전원 OFF"
 
-    send_to_simulink(state["voltage"], state["code"], print_log=True)
+    send_to_simulink(
+        state["voltage"],
+        state["code"],
+        print_log=True,
+        label=state["label"],
+    )
 
 
 def trigger_spark():
@@ -316,6 +365,10 @@ def get_state():
 
 @app.route("/preset/<int:code>", methods=["POST"])
 def preset(code):
+    blocked = require_local_control(f"preset:{code}")
+    if blocked:
+        return blocked
+
     if code not in faults:
         return jsonify({"ok": False, "error": "invalid code"}), 400
 
@@ -324,21 +377,37 @@ def preset(code):
 
 @app.route("/reset", methods=["POST"])
 def reset():
+    blocked = require_local_control("reset")
+    if blocked:
+        return blocked
+
     return action_response(lambda: set_fault(0, "고장 해제"))
 
 
 @app.route("/power/on", methods=["POST"])
 def power_on():
+    blocked = require_local_control("power:on")
+    if blocked:
+        return blocked
+
     return action_response(set_power_on)
 
 
 @app.route("/power/off", methods=["POST"])
 def power_off():
+    blocked = require_local_control("power:off")
+    if blocked:
+        return blocked
+
     return action_response(set_power_off)
 
 
 @app.route("/manual", methods=["POST"])
 def manual():
+    blocked = require_local_control("manual")
+    if blocked:
+        return blocked
+
     data = request.get_json() or {}
 
     try:
@@ -364,7 +433,12 @@ def manual():
     state["ai"] = "직접 입력"
 
     return action_response(
-        lambda: send_to_simulink(state["voltage"], state["code"], print_log=True)
+        lambda: send_to_simulink(
+            state["voltage"],
+            state["code"],
+            print_log=True,
+            label=label,
+        )
     )
 
 
@@ -373,11 +447,21 @@ def manual():
 # =========================
 @app.route("/camera/on", methods=["POST", "GET"])
 def camera_on():
+    if request.method == "POST":
+        blocked = require_local_control("camera:on")
+        if blocked:
+            return blocked
+
     return jsonify(set_camera_enabled(True))
 
 
 @app.route("/camera/off", methods=["POST", "GET"])
 def camera_off():
+    if request.method == "POST":
+        blocked = require_local_control("camera:off")
+        if blocked:
+            return blocked
+
     return jsonify(set_camera_enabled(False))
 
 
@@ -385,6 +469,10 @@ def camera_off():
 def camera_mode():
     if request.method == "GET":
         return jsonify(make_response())
+
+    blocked = require_local_control("camera_mode")
+    if blocked:
+        return blocked
 
     data = request.get_json(silent=True) or {}
     enabled = parse_bool(data.get("enabled", False))
@@ -447,6 +535,10 @@ def video_feed():
 
 @app.post("/ess/<int:cmd>")
 def set_ess(cmd):
+    blocked = require_local_control(f"ess:{cmd}")
+    if blocked:
+        return blocked
+
     cmd = 1 if cmd else 0
 
     def update_ess():
