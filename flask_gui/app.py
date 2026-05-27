@@ -50,6 +50,7 @@ POWER_OFF_VOLTAGE = 0.0
 
 eng = None
 eng_lock = threading.Lock()
+camera_lock = threading.Lock()
 
 try:
     model = YOLO(BASE_DIR / "spark.pt")
@@ -60,6 +61,7 @@ except Exception as e:
 
 SPARK_COOLDOWN_SEC = 3.0
 last_spark_time = 0.0
+spark_update_running = False
 
 
 # =========================
@@ -121,7 +123,6 @@ def init_matlab():
                 "같게 맞추거나 관리자 PowerShell에서 실행하세요."
             ) from e
 
-    # 이미 열려 있는 모델에 붙거나, 새 엔진이면 모델을 로드합니다.
     eng.load_system(MODEL_PATH, nargout=0)
 
     print("MATLAB Engine ready")
@@ -151,7 +152,8 @@ def send_to_simulink(voltage, code, print_log=False):
 
     print(
         f"Simulink read-back | "
-        f"voltage_cmd={v_read}, fault_code_cmd={c_read}"
+        f"voltage_cmd={v_read}, fault_code_cmd={c_read}",
+        flush=True,
     )
 
     if print_log:
@@ -159,7 +161,8 @@ def send_to_simulink(voltage, code, print_log=False):
             f"Simulink updated | "
             f"voltage={float(voltage)}, "
             f"code={float(code)}, "
-            f"label={state['label']}"
+            f"label={state['label']}",
+            flush=True,
         )
 
 
@@ -184,7 +187,7 @@ def action_response(action):
         action()
     except Exception as e:
         state["ai"] = f"MATLAB 연결 오류: {e}"
-        print(f"MATLAB action error: {e}")
+        print(f"MATLAB action error: {e}", flush=True)
         return jsonify({
             **make_response(),
             "ok": False,
@@ -238,9 +241,12 @@ def set_power_off():
 
 
 def trigger_spark():
-    global last_spark_time
+    global last_spark_time, spark_update_running
 
-    if not state["camera_mode"]:
+    with camera_lock:
+        camera_enabled = state["camera_mode"]
+
+    if not camera_enabled:
         return
 
     now = time.time()
@@ -248,8 +254,61 @@ def trigger_spark():
     if now - last_spark_time < SPARK_COOLDOWN_SEC:
         return
 
+    if spark_update_running:
+        return
+
     last_spark_time = now
-    set_fault(9, "스파크 감지됨")
+    spark_update_running = True
+
+    state["ai"] = "스파크 감지됨 - Simulink 전송 중"
+
+    def update_spark_fault():
+        global spark_update_running
+
+        try:
+            set_fault(9, "스파크 감지됨")
+        except Exception as e:
+            state["ai"] = f"스파크 전송 오류: {e}"
+            print(f"spark update error: {e}", flush=True)
+        finally:
+            spark_update_running = False
+
+    threading.Thread(
+        target=update_spark_fault,
+        daemon=True
+    ).start()
+
+
+# =========================
+# 카메라 상태 제어 함수
+# =========================
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    if isinstance(value, str):
+        value = value.strip().lower()
+        return value in ["1", "true", "on", "yes", "y"]
+
+    return False
+
+
+def set_camera_enabled(enabled):
+    enabled = bool(enabled)
+
+    with camera_lock:
+        state["camera_mode"] = enabled
+        state["ai"] = "카메라 ON" if enabled else "카메라 OFF"
+
+    print(
+        f"Camera mode changed | camera_mode={state['camera_mode']}",
+        flush=True,
+    )
+
+    return make_response()
 
 
 # =========================
@@ -320,20 +379,16 @@ def manual():
 
 
 # =========================
-# YOLO 카메라 제어
+# YOLO 카메라 제어 라우트
 # =========================
-@app.route("/camera/on", methods=["POST"])
+@app.route("/camera/on", methods=["POST", "GET"])
 def camera_on():
-    state["camera_mode"] = True
-    state["ai"] = "카메라 ON"
-    return jsonify(make_response())
+    return jsonify(set_camera_enabled(True))
 
 
-@app.route("/camera/off", methods=["POST"])
+@app.route("/camera/off", methods=["POST", "GET"])
 def camera_off():
-    state["camera_mode"] = False
-    state["ai"] = "카메라 OFF"
-    return jsonify(make_response())
+    return jsonify(set_camera_enabled(False))
 
 
 @app.route("/camera_mode", methods=["GET", "POST"])
@@ -341,20 +396,17 @@ def camera_mode():
     if request.method == "GET":
         return jsonify(make_response())
 
-    data = request.get_json() or {}
-    enabled = bool(data.get("enabled", False))
+    data = request.get_json(silent=True) or {}
+    enabled = parse_bool(data.get("enabled", False))
 
-    state["camera_mode"] = enabled
-    state["ai"] = "카메라 ON" if enabled else "카메라 OFF"
-
-    return jsonify(make_response())
+    return jsonify(set_camera_enabled(enabled))
 
 
 def generate_frames():
     camera = cv2.VideoCapture(0)
 
     if not camera.isOpened():
-        print("camera open failed")
+        print("camera open failed", flush=True)
         return
 
     try:
@@ -366,14 +418,18 @@ def generate_frames():
 
             output_frame = frame
 
-            if state["camera_mode"]:
+            with camera_lock:
+                camera_enabled = state["camera_mode"]
+
+            if camera_enabled:
                 results = model(frame, conf=0.4, verbose=False)
                 output_frame = results[0].plot()
 
                 if len(results[0].boxes) > 0:
                     trigger_spark()
                 else:
-                    state["ai"] = "카메라 ON"
+                    if not spark_update_running:
+                        state["ai"] = "카메라 ON"
 
             ret, buffer = cv2.imencode(".jpg", output_frame)
 
@@ -399,6 +455,7 @@ def video_feed():
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
+
 @app.post("/ess/<int:cmd>")
 def set_ess(cmd):
     cmd = 1 if cmd else 0
@@ -420,6 +477,7 @@ def set_ess(cmd):
         return jsonify({"ok": False, "ess_cmd": cmd, "error": str(e)}), 503
 
     return jsonify({"ok": True, "ess_cmd": cmd, "readback": readback})
+
 
 # =========================
 # 실행부
