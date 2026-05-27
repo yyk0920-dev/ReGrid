@@ -10,6 +10,7 @@ MODEL_PATH = "models/random_forest_fault_classifier.pkl"
 
 UDP_IP = "0.0.0.0"
 UDP_PORT = 5000
+OUTPUT_MODE = "terminal_only"
 
 WINDOW_SIZE = 10
 
@@ -168,6 +169,7 @@ def main():
     print("ReGrid 실시간 AI 고장 판단 시작")
     print("UDP 수신:", f"{UDP_IP}:{UDP_PORT}")
     print("MODEL:", MODEL_PATH)
+    print("OUTPUT:", f"{OUTPUT_MODE} - Flask/Simulink 제어 입력으로 전송하지 않음")
     print("================================")
 
     while True:
@@ -194,6 +196,8 @@ def main():
             sound=sound
         )
 
+        # 예측 결과는 현재 터미널 표시와 추후 n8n 이벤트 확장용이다.
+        # Flask /preset 또는 Simulink 제어 입력으로는 보내지 않는다.
         print(
             f"from {addr} | "
             f"Ia={Ia:.3f}, "
