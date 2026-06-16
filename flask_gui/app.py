@@ -46,8 +46,22 @@ MATLAB_START_OPTIONS = "-desktop -nosplash"
 VOLTAGE_BLOCK = f"{MODEL_NAME}/voltage_cmd"
 FAULT_BLOCK = f"{MODEL_NAME}/fault_code_cmd"
 
-DEFAULT_VOLTAGE = 12.0
+DEFAULT_VOLTAGE = 22900.0
 POWER_OFF_VOLTAGE = 0.0
+
+SCENARIOS = [
+    {"case": "N", "code": 0, "system_state": "NORMAL", "fault_type": "N", "fault_details": "정상 운전", "currents": {"A": 200.0, "B": 200.0, "C": 200.0}, "fc": 0},
+    {"case": "F1", "code": 1, "system_state": "FAULT", "fault_type": "3상 단락", "fault_details": "A-B-C 단락", "currents": {"A": 8000.0, "B": 8000.0, "C": 8000.0}, "fc": 1},
+    {"case": "F2", "code": 2, "system_state": "FAULT", "fault_type": "2상 단락", "fault_details": "A-B 단락", "currents": {"A": 6500.0, "B": 6500.0, "C": 200.0}, "fc": 2},
+    {"case": "F3", "code": 3, "system_state": "FAULT", "fault_type": "2상 단락", "fault_details": "B-C 단락", "currents": {"A": 200.0, "B": 6500.0, "C": 6500.0}, "fc": 3},
+    {"case": "F4", "code": 4, "system_state": "FAULT", "fault_type": "2상 단락", "fault_details": "C-A 단락", "currents": {"A": 6500.0, "B": 200.0, "C": 6500.0}, "fc": 4},
+    {"case": "F5", "code": 5, "system_state": "FAULT", "fault_type": "지락", "fault_details": "A상 지락", "currents": {"A": 4500.0, "B": 250.0, "C": 250.0}, "fc": 5},
+    {"case": "F6", "code": 6, "system_state": "FAULT", "fault_type": "지락", "fault_details": "B상 지락", "currents": {"A": 250.0, "B": 4500.0, "C": 250.0}, "fc": 6},
+    {"case": "F7", "code": 7, "system_state": "FAULT", "fault_type": "지락", "fault_details": "C상 지락", "currents": {"A": 250.0, "B": 250.0, "C": 4500.0}, "fc": 7},
+    {"case": "TEMP", "code": 8, "system_state": "FAULT", "fault_type": "온도", "fault_details": "온도 높음", "currents": {"A": 200.0, "B": 200.0, "C": 200.0}, "fc": 8},
+    {"case": "SPARK", "code": 9, "system_state": "FAULT", "fault_type": "스파크", "fault_details": "스파크 감지", "currents": {"A": 200.0, "B": 200.0, "C": 200.0}, "fc": 9},
+]
+SCENARIO_BY_CODE = {item["code"]: item for item in SCENARIOS}
 
 eng = None
 eng_lock = threading.Lock()
@@ -75,6 +89,10 @@ state = {
     "fault_name": "NORMAL",
     "label": "POWER ON",
     "desc": "정상 전원 인가",
+    "fault_type": "N",
+    "fault_details": "정상 운전",
+    "currents": {"A": 200.0, "B": 200.0, "C": 200.0},
+    "fc": 0,
     "ai": "대기 중",
     "camera_mode": False,
 }
@@ -184,9 +202,22 @@ def make_response():
             "fault_name": state["fault_name"],
             "label": state["label"],
             "desc": state["desc"],
+            "fault_type": state["fault_type"],
+            "fault_details": state["fault_details"],
+            "currents": dict(state["currents"]),
+            "fc": state["fc"],
             "ai": state["ai"],
             "camera_mode": state["camera_mode"],
         }
+
+
+def apply_scenario_to_state(code):
+    scenario = SCENARIO_BY_CODE.get(int(code), SCENARIO_BY_CODE[0])
+    state["fault_type"] = scenario["fault_type"]
+    state["fault_details"] = scenario["fault_details"]
+    state["currents"] = dict(scenario["currents"])
+    state["fc"] = scenario["fc"]
+    return scenario
 
 
 def action_response(action):
@@ -230,6 +261,7 @@ def set_fault(code, ai_text="고장 버튼 입력"):
         state["fault_name"] = fault_name
         state["label"] = label
         state["desc"] = desc
+        apply_scenario_to_state(code)
         state["ai"] = ai_text
 
     readback = send_to_simulink(DEFAULT_VOLTAGE, code, print_log=True)
@@ -251,6 +283,7 @@ def set_power_on():
         state["fault_name"] = "NORMAL"
         state["label"] = "POWER ON"
         state["desc"] = "정상 전원 인가"
+        apply_scenario_to_state(0)
         state["ai"] = "전원 ON"
 
     readback = send_to_simulink(DEFAULT_VOLTAGE, 0, print_log=True)
@@ -272,6 +305,10 @@ def set_power_off():
         state["fault_name"] = "NORMAL"
         state["label"] = "POWER OFF"
         state["desc"] = "전원 차단"
+        state["fault_type"] = "OFF"
+        state["fault_details"] = "전원 차단"
+        state["currents"] = {"A": 0.0, "B": 0.0, "C": 0.0}
+        state["fc"] = 0
         state["ai"] = "전원 OFF"
 
     readback = send_to_simulink(POWER_OFF_VOLTAGE, 0, print_log=True)
@@ -293,6 +330,7 @@ def reset_fault():
         state["fault_name"] = "NORMAL"
         state["label"] = "RESET"
         state["desc"] = "고장 해제 / 정상상태"
+        apply_scenario_to_state(0)
         state["ai"] = "고장 해제"
 
     readback = send_to_simulink(DEFAULT_VOLTAGE, 0, print_log=True)
@@ -386,7 +424,13 @@ def trigger_spark():
 
 @app.route("/", methods=["GET"])
 def index():
-    return render_template("index.html", faults=faults, state=make_response())
+    return render_template(
+        "index.html",
+        faults=faults,
+        state=make_response(),
+        scenarios=SCENARIOS,
+        default_voltage=DEFAULT_VOLTAGE,
+    )
 
 
 @app.route("/health", methods=["GET"])
@@ -487,6 +531,9 @@ def manual():
             state["fault_name"] = fault_name
             state["label"] = label
             state["desc"] = desc
+            apply_scenario_to_state(code)
+            if isinstance(currents, dict):
+                state["currents"] = dict(currents)
             state["ai"] = "직접 입력"
 
         readback = send_to_simulink(voltage, code, print_log=True)
