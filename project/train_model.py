@@ -1,52 +1,97 @@
 import os
 import joblib
 import pandas as pd
+import numpy as np
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import classification_report
+from sklearn.metrics import confusion_matrix
 
 DATA_PATH = "data/regrid_real_data.csv"
 MODEL_PATH = "models/random_forest_fault_classifier.pkl"
 
 os.makedirs("models", exist_ok=True)
 
-fault_names = {
-    0: "NORMAL / 정상",
-    1: "F1 / 3상 단락",
-    2: "F2 / A-B 단락",
-    3: "F3 / B-C 단락",
-    4: "F4 / C-A 단락",
-    5: "F5 / A상 지락",
-    6: "F6 / B상 지락",
-    7: "F7 / C상 지락",
-    8: "F8 / 과열",
-    9: "F9 / 스파크"
-}
+WINDOW_SIZE = 10
 
 df = pd.read_csv(DATA_PATH)
+
 df = df.dropna()
 
-features = ["Ia", "Ib", "Ic", "temperature", "sound"]
+# -----------------------------
+# 기본 feature
+# -----------------------------
+df["Iab_diff"] = abs(df["Ia"] - df["Ib"])
+df["Ibc_diff"] = abs(df["Ib"] - df["Ic"])
+df["Ica_diff"] = abs(df["Ic"] - df["Ia"])
+
+df["I_mean"] = (df["Ia"] + df["Ib"] + df["Ic"]) / 3
+
+df["I_unbalance"] = (
+    abs(df["Ia"] - df["I_mean"]) +
+    abs(df["Ib"] - df["I_mean"]) +
+    abs(df["Ic"] - df["I_mean"])
+)
+
+df["I_sum"] = df["Ia"] + df["Ib"] + df["Ic"]
+
+# -----------------------------
+# Rolling Mean
+# -----------------------------
+df["Ia_mean_10"] = df["Ia"].rolling(WINDOW_SIZE).mean()
+df["Ib_mean_10"] = df["Ib"].rolling(WINDOW_SIZE).mean()
+df["Ic_mean_10"] = df["Ic"].rolling(WINDOW_SIZE).mean()
+
+# -----------------------------
+# Rolling Variance
+# -----------------------------
+df["Ia_var_10"] = df["Ia"].rolling(WINDOW_SIZE).var()
+df["Ib_var_10"] = df["Ib"].rolling(WINDOW_SIZE).var()
+df["Ic_var_10"] = df["Ic"].rolling(WINDOW_SIZE).var()
+
+# -----------------------------
+# 변화량 feature
+# -----------------------------
+df["dIa"] = df["Ia"].diff()
+df["dIb"] = df["Ib"].diff()
+df["dIc"] = df["Ic"].diff()
+
+df = df.dropna()
+
+features = [
+    "Ia",
+    "Ib",
+    "Ic",
+    "temperature",
+    "sound",
+
+    "Iab_diff",
+    "Ibc_diff",
+    "Ica_diff",
+
+    "I_mean",
+    "I_unbalance",
+    "I_sum",
+
+    "Ia_mean_10",
+    "Ib_mean_10",
+    "Ic_mean_10",
+
+    "Ia_var_10",
+    "Ib_var_10",
+    "Ic_var_10",
+
+    "dIa",
+    "dIb",
+    "dIc"
+]
+
 target = "fault_code"
 
 X = df[features]
 y = df[target].astype(int)
-
-print("================================")
-print("학습 데이터 확인")
-print("================================")
-print("전체 데이터 개수:", len(df))
-print()
-print("라벨별 개수:")
-print(y.value_counts().sort_index())
-print()
-print("라벨별 평균값:")
-print(df.groupby("fault_code")[features].mean())
-print()
-print("라벨별 표준편차:")
-print(df.groupby("fault_code")[features].std())
-print()
 
 X_train, X_test, y_train, y_test = train_test_split(
     X,
@@ -57,33 +102,43 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 model = RandomForestClassifier(
-    n_estimators=300,
-    random_state=42,
-    class_weight="balanced"
+    n_estimators=500,
+    max_depth=20,
+    min_samples_split=3,
+    class_weight="balanced",
+    random_state=42
 )
 
 model.fit(X_train, y_train)
 
 y_pred = model.predict(X_test)
 
-labels = sorted(y.unique())
-target_names = [fault_names[i] for i in labels]
+print("================================")
+print("RandomForest 결과")
+print("================================")
 
-print("================================")
-print("Random Forest 고장 유형 분류 결과")
-print("================================")
 print("정확도:", accuracy_score(y_test, y_pred))
+
 print()
-print("분류 리포트")
-print(classification_report(
-    y_test,
-    y_pred,
-    labels=labels,
-    target_names=target_names
-))
+print(classification_report(y_test, y_pred))
+
 print()
-print("혼동 행렬")
-print(confusion_matrix(y_test, y_pred, labels=labels))
+print(confusion_matrix(y_test, y_pred))
+
+# 중요 feature 확인
+importance_df = pd.DataFrame({
+    "feature": features,
+    "importance": model.feature_importances_
+})
+
+importance_df = importance_df.sort_values(
+    by="importance",
+    ascending=False
+)
+
+print()
+print("중요 feature")
+print(importance_df)
 
 joblib.dump(model, MODEL_PATH)
 

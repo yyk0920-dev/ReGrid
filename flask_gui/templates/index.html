@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ReGrid Control</title>
+
     <style>
         * {
             box-sizing: border-box;
@@ -95,6 +96,14 @@
             font-weight: 800;
         }
 
+        .camera-status {
+            margin-top: 10px;
+            font-size: 17px;
+            font-weight: 900;
+            color: #93c5fd;
+            font-family: Consolas, monospace;
+        }
+
         .video-title {
             font-size: 22px;
             font-weight: 900;
@@ -158,7 +167,7 @@
             cursor: pointer;
             font-size: 17px;
             font-weight: 800;
-            transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease;
+            transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
             box-shadow: 0 12px 26px rgba(0, 0, 0, 0.24);
             min-height: 92px;
         }
@@ -173,21 +182,60 @@
             transform: translateY(1px);
         }
 
+        button:disabled {
+            cursor: wait;
+            opacity: 0.55;
+            transform: none;
+        }
+
         .wide-btn {
             min-height: 82px;
             padding: 18px 12px;
         }
 
-        .power-on { background: linear-gradient(135deg, #15803d, #22c55e); }
-        .power-off { background: linear-gradient(135deg, #374151, #6b7280); }
-        .fault-0 { background: linear-gradient(135deg, #0369a1, #38bdf8); }
-        .fault-1 { background: linear-gradient(135deg, #b91c1c, #ef4444); }
-        .fault-2, .fault-3, .fault-4 { background: linear-gradient(135deg, #c2410c, #f97316); }
-        .fault-5, .fault-6, .fault-7 { background: linear-gradient(135deg, #a16207, #eab308); }
-        .fault-8 { background: linear-gradient(135deg, #6d28d9, #8b5cf6); }
-        .fault-9 { background: linear-gradient(135deg, #9f1239, #e11d48); }
-        .camera-on { background: linear-gradient(135deg, #0f766e, #14b8a6); }
-        .camera-off { background: linear-gradient(135deg, #4b5563, #9ca3af); }
+        .power-on {
+            background: linear-gradient(135deg, #15803d, #22c55e);
+        }
+
+        .power-off {
+            background: linear-gradient(135deg, #374151, #6b7280);
+        }
+
+        .fault-0 {
+            background: linear-gradient(135deg, #0369a1, #38bdf8);
+        }
+
+        .fault-1 {
+            background: linear-gradient(135deg, #b91c1c, #ef4444);
+        }
+
+        .fault-2,
+        .fault-3,
+        .fault-4 {
+            background: linear-gradient(135deg, #c2410c, #f97316);
+        }
+
+        .fault-5,
+        .fault-6,
+        .fault-7 {
+            background: linear-gradient(135deg, #a16207, #eab308);
+        }
+
+        .fault-8 {
+            background: linear-gradient(135deg, #6d28d9, #8b5cf6);
+        }
+
+        .fault-9 {
+            background: linear-gradient(135deg, #9f1239, #e11d48);
+        }
+
+        .camera-on {
+            background: linear-gradient(135deg, #0f766e, #14b8a6);
+        }
+
+        .camera-off {
+            background: linear-gradient(135deg, #4b5563, #9ca3af);
+        }
 
         .code {
             font-size: 26px;
@@ -240,12 +288,13 @@
         }
     </style>
 </head>
+
 <body>
     <div class="app">
         <div class="header">
             <h1 class="title">ReGrid Control</h1>
             <div class="subtitle">
-                기본 12V 전원을 인가하고, 고장 버튼으로 Simulink 고장 스위치를 제어합니다.
+                전압 및 고장 코드 감지
             </div>
         </div>
 
@@ -253,18 +302,31 @@
             <div class="left-panel">
                 <div class="status-card">
                     <div class="status-label">현재 상태</div>
-                    <div class="status-main" id="statusCode">{{ state.label }}</div>
-                    <div class="status-desc" id="statusDesc">{{ state.desc }}</div>
+
+                    <div class="status-main" id="statusCode">
+                        {{ state.label }} 입력
+                    </div>
+
+                    <div class="status-desc" id="statusDesc">
+                        전압={{ state.voltage }}, 고장 상황 코드={{ state.code }} 전송 명령
+                    </div>
+
                     <div class="status-value" id="statusValue">
                         V={{ state.voltage }} / CODE={{ state.code }}
                     </div>
+
                     <div class="ai-status" id="aiStatus">
-                        AI: {{ state.ai }}
+                        CONTROL: {{ state.ai }}
+                    </div>
+
+                    <div class="camera-status" id="cameraStatus">
+                        CAMERA: {{ "ON" if state.camera_mode else "OFF" }}
                     </div>
                 </div>
 
                 <div class="button-area">
-                    <div class="section-title">전원 제어</div>
+                    <div class="section-title">전원 입력 명령</div>
+
                     <div class="row row-2">
                         <button class="power-on wide-btn" onclick="powerOn()">
                             <span class="code">POWER ON</span>
@@ -277,27 +339,27 @@
                         </button>
                     </div>
 
-                    <div class="section-title">고장 해제</div>
-                    <div class="row row-2">
+                    <div class="section-title">시뮬레이션 해제 / 카메라 제어</div>
+
+                    <div class="row row-3">
                         <button class="fault-0 wide-btn" onclick="resetFault()">
                             <span class="code">RESET</span>
-                            <span class="desc">고장 스위치 해제</span>
+                            <span class="desc">고장코드 0</span>
                         </button>
 
-                        <button class="camera-on wide-btn" onclick="cameraOn()">
+                        <button id="cameraOnBtn" class="camera-on wide-btn" onclick="cameraOn()">
                             <span class="code">CAMERA ON</span>
-                            <span class="desc">스파크 감지 활성화</span>
+                            <span class="desc">카메라 감지 활성화</span>
                         </button>
-                    </div>
 
-                    <div class="row row-2">
-                        <button class="camera-off wide-btn" onclick="cameraOff()">
+                        <button id="cameraOffBtn" class="camera-off wide-btn" onclick="cameraOff()">
                             <span class="code">CAMERA OFF</span>
-                            <span class="desc">스파크 감지 비활성화</span>
+                            <span class="desc">카메라 감지 비활성화</span>
                         </button>
                     </div>
 
-                    <div class="section-title">주요 고장 / 위험 상태</div>
+                    <div class="section-title">고장 시뮬레이션 입력</div>
+
                     <div class="row row-3">
                         <button class="fault-1" onclick="sendPreset(1)">
                             <span class="code">F1</span>
@@ -315,7 +377,8 @@
                         </button>
                     </div>
 
-                    <div class="section-title">2상 단락</div>
+                    <div class="section-title">2상 단락 시뮬레이션 입력</div>
+
                     <div class="row row-3">
                         <button class="fault-2" onclick="sendPreset(2)">
                             <span class="code">F2</span>
@@ -333,7 +396,8 @@
                         </button>
                     </div>
 
-                    <div class="section-title">지락 고장</div>
+                    <div class="section-title">지락 고장 시뮬레이션 입력</div>
+
                     <div class="row row-3">
                         <button class="fault-5" onclick="sendPreset(5)">
                             <span class="code">F5</span>
@@ -356,114 +420,151 @@
             <div class="right-panel">
                 <div class="video-card">
                     <div class="video-title">Vision AI Spark Detection</div>
+
                     <div class="video-box">
-                        <img src="/video_feed" alt="YOLO Video Feed">
+                        <img id="cameraFeed" src="/video_feed" alt="YOLO Video Feed">
                     </div>
-                    <div class="video-desc">
-                        CAMERA ON 상태에서 YOLO 모델이 스파크를 감지하면 SPARK 고장코드가 Simulink로 전송됩니다.
+
+                    <div class="video-desc" id="videoDesc">
+                        CAMERA ON 상태에서는 YOLO가 스파크를 감지하면 자동으로 fault_code_cmd=9를 전송합니다.
                     </div>
                 </div>
             </div>
         </div>
 
         <div class="footer">
-            MATLAB Engine: ReGridEngine / Blocks: voltage_cmd, fault_code_cmd / YOLO: spark.pt
+            MATLAB Engine: ReGridEngine / Blocks: voltage_cmd, fault_code_cmd / Relay Control: Disabled
         </div>
     </div>
 
     <script>
-        function updateStatus(data) {
-            document.getElementById("statusCode").innerText = data.label;
-            document.getElementById("statusDesc").innerText = data.desc;
-            document.getElementById("statusValue").innerText =
-                `V=${data.voltage} / CODE=${data.code}`;
+        let busy = false;
 
-            if (data.ai !== undefined) {
-                document.getElementById("aiStatus").innerText = `AI: ${data.ai}`;
+        function valueOrDefault(value, defaultValue) {
+            if (value === undefined || value === null) {
+                return defaultValue;
+            }
+            return value;
+        }
+
+        function setBusy(value) {
+            busy = value;
+
+            const buttons = document.querySelectorAll("button");
+            buttons.forEach(btn => {
+                btn.disabled = value;
+            });
+        }
+
+        function updateStatus(data) {
+            const voltage = valueOrDefault(data.voltage, 12);
+            const code = valueOrDefault(data.code, valueOrDefault(data.fault_code, 0));
+            const label = valueOrDefault(data.command_label, `${valueOrDefault(data.label, "NORMAL")} 입력`);
+
+            const desc = valueOrDefault(
+                data.command_desc,
+                `Simulink voltage_cmd=${voltage}, fault_code_cmd=${code} 전송 명령`
+            );
+
+            const ai = valueOrDefault(data.ai, "대기 중");
+            const cameraMode = valueOrDefault(data.camera_mode, false);
+
+            document.getElementById("statusCode").innerText = label;
+            document.getElementById("statusDesc").innerText = desc;
+            document.getElementById("statusValue").innerText = `V=${voltage} / CODE=${code}`;
+            document.getElementById("aiStatus").innerText = `CONTROL: ${ai}`;
+
+            document.getElementById("cameraStatus").innerText =
+                cameraMode ? "CAMERA: ON" : "CAMERA: OFF";
+
+            document.getElementById("videoDesc").innerText =
+                cameraMode
+                    ? "CAMERA ON: YOLO 감지 활성화. 스파크 감지 시 자동 전송"
+                    : "CAMERA OFF: YOLO 스파크 감지 비활성화";
+        }
+
+        async function postJson(url, body = null) {
+            if (busy) {
+                return null;
+            }
+
+            setBusy(true);
+
+            try {
+                const options = {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    }
+                };
+
+                if (body !== null) {
+                    options.body = JSON.stringify(body);
+                }
+
+                const response = await fetch(url, options);
+                const data = await response.json();
+
+                console.log(url, data);
+
+                if (data.ok) {
+                    updateStatus(data);
+                } else {
+                    alert(data.error || "전송 실패");
+                }
+
+                return data;
+            } catch (error) {
+                console.error(url, error);
+                alert("서버 요청 실패: Flask 확인");
+                return null;
+            } finally {
+                setBusy(false);
             }
         }
 
         async function sendPreset(code) {
-            const response = await fetch(`/preset/${code}`, {
-                method: "POST"
-            });
-
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
-            } else {
-                alert("전송 실패");
-            }
+            await postJson(`/preset/${code}`);
         }
 
         async function resetFault() {
-            const response = await fetch("/reset", {
-                method: "POST"
-            });
-
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
-            }
+            await postJson("/reset");
         }
 
         async function powerOn() {
-            const response = await fetch("/power/on", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    voltage: 12
-                })
+            await postJson("/power/on", {
+                voltage: 12
             });
-
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
-            }
         }
 
         async function powerOff() {
-            const response = await fetch("/power/off", {
-                method: "POST"
-            });
-
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
-            }
+            await postJson("/power/off");
         }
 
         async function cameraOn() {
-            const response = await fetch("/camera/on", {
-                method: "POST"
-            });
+            const data = await postJson("/camera/on");
 
-            const data = await response.json();
-
-            if (data.ok) {
-                updateStatus(data);
+            if (data && data.ok) {
+                const feed = document.getElementById("cameraFeed");
+                feed.src = "/video_feed?t=" + new Date().getTime();
+                alert("카메라 ON 완료");
             }
         }
 
         async function cameraOff() {
-            const response = await fetch("/camera/off", {
-                method: "POST"
-            });
+            const data = await postJson("/camera/off");
 
-            const data = await response.json();
-
-            if (data.ok) {
+            if (data && data.ok) {
                 updateStatus(data);
+                alert("카메라 OFF 완료");
             }
         }
 
         async function refreshState() {
+            if (busy) {
+                return;
+            }
+
             try {
                 const response = await fetch("/state");
                 const data = await response.json();
@@ -476,6 +577,7 @@
             }
         }
 
+        refreshState();
         setInterval(refreshState, 1000);
     </script>
 </body>

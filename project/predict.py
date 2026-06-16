@@ -1,4 +1,5 @@
 import joblib
+import os
 import pandas as pd
 import requests
 
@@ -17,7 +18,13 @@ MODEL_PATH = "models/random_forest_fault_classifier.pkl"
 # 라즈베리파이에서 PC로 보낼 때:
 # PC_URL = "http://192.168.137.1:8000"
 
-PC_URL = "http://127.0.0.1:8000"
+PC_URL = os.getenv("REGRID_PC_URL", "http://127.0.0.1:8000")
+SEND_TO_PC_DEFAULT = os.getenv("REGRID_SEND_TO_PC", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 # =========================
 # 고장 코드 이름
 # =========================
@@ -78,7 +85,14 @@ def send_fault_code(fault_code):
 # AI 고장 유형 분류
 # =========================
 
-def predict_fault_type(Ia, Ib, Ic, temperature, spark_detected, send_to_pc=True):
+def predict_fault_type(
+    Ia,
+    Ib,
+    Ic,
+    temperature,
+    spark_detected,
+    send_to_pc=SEND_TO_PC_DEFAULT,
+):
     """
     AI 역할:
     센서값을 입력받아 F1~F9 고장 유형만 분류한다.
@@ -139,5 +153,5 @@ if __name__ == "__main__":
         Ic=6.8,
         temperature=35,
         spark_detected=0,
-        send_to_pc=True
+        send_to_pc=SEND_TO_PC_DEFAULT
     )
