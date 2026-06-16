@@ -67,6 +67,7 @@ TELEMETRY_INTERVAL = _env_float("REGRID_TELEMETRY_INTERVAL", 60.0)
 # env: use TEST_MODE/TEST_VOLTAGE/TEST_CURRENT values
 # udp: receive Vrms/Irms from PC Python GUI or Simulink over UDP
 INPUT_MODE = os.getenv("REGRID_INPUT_MODE", "sensor").lower()
+DISPLAY_ONLY = _env_bool("REGRID_DISPLAY_ONLY", False)
 
 SIM_UDP_HOST = os.getenv("REGRID_SIM_UDP_HOST", "0.0.0.0")
 SIM_UDP_PORT = _env_int("REGRID_SIM_UDP_PORT", 5000)
