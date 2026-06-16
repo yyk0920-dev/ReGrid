@@ -14,8 +14,9 @@ DATA_PATH = "data/regrid_real_data.csv"
 
 # Simulink 또는 PC에서 RPi로 보내는 UDP 포트
 # 네 로그에서 node-a가 받고 있던 포트가 보통 5000이면 그대로 사용
-UDP_IP = "0.0.0.0"
-UDP_PORT = 5000
+UDP_IP = os.getenv("REGRID_UDP_IP", "0.0.0.0")
+UDP_PORT = int(os.getenv("REGRID_UDP_PORT", "5000"))
+UDP_IDLE_LOG_SEC = float(os.getenv("REGRID_UDP_IDLE_LOG_SEC", "5.0"))
 
 fault_names = {
     0: "NORMAL / 정상",
@@ -112,12 +113,23 @@ def collect_data(node_id, fault_code, count, delay):
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((UDP_IP, UDP_PORT))
+    sock.settimeout(1.0)
 
     saved_count = 0
+    last_idle_log_time = time.time()
 
     try:
         while True:
-            data, addr = sock.recvfrom(1024)
+            try:
+                data, addr = sock.recvfrom(1024)
+            except socket.timeout:
+                now = time.time()
+                if now - last_idle_log_time >= UDP_IDLE_LOG_SEC:
+                    print(
+                        f"[WAIT] UDP packet not received yet on {UDP_IP}:{UDP_PORT}"
+                    )
+                    last_idle_log_time = now
+                continue
 
             try:
                 Ia, Ib, Ic, temperature, sound = decode_packet(data)

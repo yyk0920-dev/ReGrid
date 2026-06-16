@@ -2,3 +2,4 @@ __pycache__/
 *.py[cod]
 .venv/
 power_data.jsonl
+flask_gui/slprj/
