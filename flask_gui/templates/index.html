@@ -257,6 +257,45 @@
             font-family: Consolas, monospace;
         }
 
+
+        .reference-table-wrap {
+            margin-top: 14px;
+            overflow-x: auto;
+        }
+
+        .reference-note {
+            margin-top: 10px;
+            color: #facc15;
+            font-size: 13px;
+            line-height: 1.5;
+            font-weight: 800;
+        }
+
+        .reference-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            color: #f9fafb;
+        }
+
+        .reference-table th,
+        .reference-table td {
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            padding: 8px 7px;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .reference-table th {
+            background: rgba(255, 255, 255, 0.12);
+            color: #e5e7eb;
+            font-weight: 900;
+        }
+
+        .reference-table td:nth-child(4) {
+            text-align: left;
+        }
+
         @media (max-width: 1000px) {
             .main-grid {
                 grid-template-columns: 1fr;
@@ -294,7 +333,7 @@
         <div class="header">
             <h1 class="title">ReGrid Control</h1>
             <div class="subtitle">
-                전압 및 고장 코드 감지
+                22.9kV 메인 전압 및 고장 코드 입력
             </div>
         </div>
 
@@ -308,11 +347,11 @@
                     </div>
 
                     <div class="status-desc" id="statusDesc">
-                        전압={{ state.voltage }}, 고장 상황 코드={{ state.code }} 전송 명령
+                        메인 전압={{ state.voltage }}V, 고장 상황 코드={{ state.code }} 전송 명령
                     </div>
 
                     <div class="status-value" id="statusValue">
-                        V={{ state.voltage }} / CODE={{ state.code }}
+                        MAIN V={{ state.voltage }}V / CODE={{ state.code }}
                     </div>
 
                     <div class="ai-status" id="aiStatus">
@@ -330,7 +369,7 @@
                     <div class="row row-2">
                         <button class="power-on wide-btn" onclick="powerOn()">
                             <span class="code">POWER ON</span>
-                            <span class="desc">12V 전원 인가</span>
+                            <span class="desc">22.9kV 메인 전압 인가</span>
                         </button>
 
                         <button class="power-off wide-btn" onclick="powerOff()">
@@ -429,11 +468,50 @@
                         CAMERA ON 상태에서는 YOLO가 스파크를 감지하면 자동으로 fault_code_cmd=9를 전송합니다.
                     </div>
                 </div>
+
+                <div class="video-card">
+                    <div class="video-title">AI Learning Reference Current Table</div>
+                    <div class="video-desc">
+                        아래 전류값은 AI 학습 및 고장 분류 기준표입니다. Simulink에 강제로 흘리는 전류값이 아니며, Flask는 메인 전압 22.9kV와 fault_code_cmd만 전송합니다.
+                    </div>
+
+                    <div class="reference-table-wrap">
+                        <table class="reference-table">
+                            <thead>
+                                <tr>
+                                    <th>Case</th>
+                                    <th>State</th>
+                                    <th>Fault</th>
+                                    <th>Details</th>
+                                    <th>Ia(A)</th>
+                                    <th>Ib(A)</th>
+                                    <th>Ic(A)</th>
+                                    <th>FC</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr><td>1</td><td>F</td><td>F1</td><td>3상 단락 A-B-C</td><td>8,000</td><td>8,000</td><td>8,000</td><td>1</td></tr>
+                                <tr><td>2</td><td>F</td><td>F2</td><td>2상 단락 A-B</td><td>6,500</td><td>6,500</td><td>200</td><td>2</td></tr>
+                                <tr><td>3</td><td>F</td><td>F3</td><td>2상 단락 B-C</td><td>200</td><td>6,500</td><td>6,500</td><td>3</td></tr>
+                                <tr><td>4</td><td>F</td><td>F4</td><td>2상 단락 C-A</td><td>6,500</td><td>200</td><td>6,500</td><td>4</td></tr>
+                                <tr><td>5</td><td>F</td><td>F5</td><td>1선 지락 A-G</td><td>4,500</td><td>250</td><td>250</td><td>5</td></tr>
+                                <tr><td>6</td><td>F</td><td>F6</td><td>1선 지락 B-G</td><td>250</td><td>4,500</td><td>250</td><td>6</td></tr>
+                                <tr><td>7</td><td>F</td><td>F7</td><td>1선 지락 C-G</td><td>250</td><td>250</td><td>4,500</td><td>7</td></tr>
+                                <tr><td>8</td><td>N</td><td>N</td><td>정상</td><td>200</td><td>200</td><td>200</td><td>8</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="reference-note">
+                        주의: 위 표는 AI 기준표입니다. 실제 Simulink 회로 전류는 회로 전원, 부하, 고장 임피던스에 의해 생성됩니다.
+                    </div>
+                </div>
+
             </div>
         </div>
 
         <div class="footer">
-            MATLAB Engine: ReGridEngine / Blocks: voltage_cmd, fault_code_cmd / Relay Control: Disabled
+            MATLAB Engine: ReGridEngine / Blocks: voltage_cmd, fault_code_cmd / Current table: AI reference only
         </div>
     </div>
 
@@ -457,13 +535,13 @@
         }
 
         function updateStatus(data) {
-            const voltage = valueOrDefault(data.voltage, 12);
+            const voltage = valueOrDefault(data.voltage, 22900);
             const code = valueOrDefault(data.code, valueOrDefault(data.fault_code, 0));
             const label = valueOrDefault(data.command_label, `${valueOrDefault(data.label, "NORMAL")} 입력`);
 
             const desc = valueOrDefault(
                 data.command_desc,
-                `Simulink voltage_cmd=${voltage}, fault_code_cmd=${code} 전송 명령`
+                `Simulink main_voltage_cmd=${voltage}V, fault_code_cmd=${code} 전송 명령`
             );
 
             const ai = valueOrDefault(data.ai, "대기 중");
@@ -471,7 +549,7 @@
 
             document.getElementById("statusCode").innerText = label;
             document.getElementById("statusDesc").innerText = desc;
-            document.getElementById("statusValue").innerText = `V=${voltage} / CODE=${code}`;
+            document.getElementById("statusValue").innerText = `MAIN V=${voltage}V / CODE=${code}`;
             document.getElementById("aiStatus").innerText = `CONTROL: ${ai}`;
 
             document.getElementById("cameraStatus").innerText =
@@ -533,7 +611,7 @@
 
         async function powerOn() {
             await postJson("/power/on", {
-                voltage: 12
+                voltage: 22900
             });
         }
 
