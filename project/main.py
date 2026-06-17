@@ -45,12 +45,12 @@ NODE_ID = get_env("REGRID_NODE_ID", "node-a")
 
 # 이 RPi가 Simulink 또는 이전 노드에서 데이터를 받는 포트
 HOST = get_env("REGRID_HOST", "0.0.0.0")
-PORT = get_int_env("REGRID_PORT", 5010)
+PORT = get_int_env("REGRID_PORT", 5000)
 
 # 다음 RPi로 원본 센서값 전달할 때 사용
-# 안 쓰면 비워두면 됨
+# A -> B -> C 체인 구조
 NEXT_NODE_IP = get_env("REGRID_CHAIN_NEXT_NODE", None)
-NEXT_NODE_PORT = get_int_env("REGRID_CHAIN_NEXT_PORT", 5010)
+NEXT_NODE_PORT = get_int_env("REGRID_CHAIN_NEXT_PORT", 5000)
 
 # A 노드 IP
 # B/C가 자기 예측 결과를 A로 보낼 때 사용
@@ -63,6 +63,10 @@ SIMULINK_LAPTOP_IP = get_env("REGRID_SIMULINK_IP", None)
 
 # Simulink에서 ESS 명령을 받는 UDP Receive 포트
 SIMULINK_ESS_PORT = get_int_env("REGRID_SIMULINK_ESS_PORT", 6010)
+
+# Simulink에서 Node C 분리 스위치 명령을 받는 UDP Receive 포트
+# 너희 회로 기준: Node C UDP Receive3 Port 6003
+SIMULINK_ISOLATE_PORT = get_int_env("REGRID_SIMULINK_ISOLATE_PORT", 6003)
 
 BYTE_ORDER = get_env("REGRID_BYTE_ORDER", "big")
 DATA_MODE = get_env("REGRID_DATA_MODE", "auto")
@@ -78,8 +82,8 @@ IS_MASTER = get_int_env(
 ENABLE_SIMULINK_CONTROL = get_int_env("REGRID_ENABLE_SIMULINK_CONTROL", 1)
 DEBUG = get_int_env("REGRID_DEBUG", 0)
 
-# 1이면 ESS 명령이 바뀔 때만 전송
-# 0이면 매 패킷마다 계속 전송
+# 1이면 ESS/분리 명령이 바뀔 때만 전송
+# 0이면 매번 계속 전송
 SEND_ON_CHANGE_ONLY = get_int_env("REGRID_SEND_ON_CHANGE_ONLY", 0)
 
 # AI 예측 신뢰도 기준
@@ -90,6 +94,9 @@ STALE_SEC = get_float_env("REGRID_STALE_SEC", 2.0)
 
 # 상태 출력 주기
 PRINT_INTERVAL = get_float_env("REGRID_PRINT_INTERVAL", 0.5)
+
+# UDP 명령 반복 전송 횟수
+COMMAND_REPEAT = get_int_env("REGRID_COMMAND_REPEAT", 5)
 
 
 # ================================
@@ -373,6 +380,10 @@ def receive_status_from_nodes():
             f"conf={float(msg.get('confidence', 0.0)):.3f}"
         )
 
+        # B/C 고장코드를 받자마자 A가 ESS + 분리 스위치 판단
+        if IS_MASTER:
+            control_ess_by_ai_status()
+
 
 # ================================
 # 자기 노드 상태 업데이트
@@ -422,39 +433,75 @@ def decide_ess_cmd():
 
 
 # ================================
-# Simulink로 ESS ON/OFF 신호 전송
-# ess_on=True  -> 1.0
-# ess_on=False -> 0.0
+# Simulink로 single 1개 UDP 전송
 # ================================
-def send_ess_cmd_to_simulink(ess_on):
+def send_single_to_simulink(value, port, label):
     if not ENABLE_SIMULINK_CONTROL:
         return
 
     if not SIMULINK_LAPTOP_IP:
-        print("[ESS CTRL] No REGRID_SIMULINK_IP configured.")
+        print(f"[{label}] No REGRID_SIMULINK_IP configured.")
         return
 
-    value = 1.0 if ess_on else 0.0
-
     fmt = ">f" if BYTE_ORDER == "big" else "<f"
-    data = struct.pack(fmt, value)
+    data = struct.pack(fmt, float(value))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     try:
-        sock.sendto(data, (SIMULINK_LAPTOP_IP, SIMULINK_ESS_PORT))
+        for _ in range(COMMAND_REPEAT):
+            sock.sendto(data, (SIMULINK_LAPTOP_IP, port))
+            time.sleep(0.01)
+
         print(
-            f"[ESS CTRL] Sent ess_cmd={value:.1f} "
-            f"to {SIMULINK_LAPTOP_IP}:{SIMULINK_ESS_PORT}"
+            f"[{label}] Sent value={float(value):.1f} x{COMMAND_REPEAT} "
+            f"to {SIMULINK_LAPTOP_IP}:{port}"
         )
+
     except Exception as e:
-        print(f"[ESS CTRL ERROR] {e}")
+        print(f"[{label} ERROR] {e}")
+
     finally:
         sock.close()
 
 
 # ================================
-# A 노드에서 ESS 제어
+# Simulink로 ESS ON/OFF 신호 전송
+# ess_on=True  -> 1.0
+# ess_on=False -> 0.0
+# ================================
+def send_ess_cmd_to_simulink(ess_on):
+    value = 1.0 if ess_on else 0.0
+    send_single_to_simulink(
+        value=value,
+        port=SIMULINK_ESS_PORT,
+        label="ESS CTRL"
+    )
+
+
+# ================================
+# Simulink로 Node C 분리 스위치 신호 전송
+#
+# switch_close=True  -> 1.0 = CLOSE
+# switch_close=False -> 0.0 = OPEN
+#
+# 고장 발생 시 OPEN시키려면 switch_close=False
+# 정상 복귀 시 CLOSE시키려면 switch_close=True
+# ================================
+def send_isolate_cmd_to_simulink(open_switch):
+    # 너희 Simulink 기준:
+    # 0.0 = CLOSE
+    # 1.0 = OPEN
+    value = 1.0 if open_switch else 0.0
+
+    send_single_to_simulink(
+        value=value,
+        port=SIMULINK_ISOLATE_PORT,
+        label="ISOLATE CTRL"
+    )
+
+# ================================
+# A 노드에서 ESS + 분리 스위치 제어
 # ================================
 def control_ess_by_ai_status():
     global last_ess_cmd
@@ -469,21 +516,34 @@ def control_ess_by_ai_status():
         return
 
     if ess_on:
-        print("[CONTROL] FAULT detected -> ESS ON")
+        print("[CONTROL] FAULT detected -> ESS ON + ISOLATE OPEN")
+
         for node_id, fault_code, fault_name, confidence in active_fault_nodes:
             print(
                 f"  - {node_id}: code={fault_code}({fault_name}), "
                 f"conf={confidence:.3f}"
             )
+
+        # ESS 백업 투입
         send_ess_cmd_to_simulink(ess_on=True)
+
+        # 고장 발생 시 Node C 분리 스위치 OPEN
+        # 6003으로 1.0 전송
+        send_isolate_cmd_to_simulink(open_switch=True)
+
     else:
-        print("[CONTROL] All available nodes Normal -> ESS OFF")
+        print("[CONTROL] All available nodes Normal -> ESS OFF + ISOLATE CLOSE")
+
+        # ESS 백업 해제
         send_ess_cmd_to_simulink(ess_on=False)
 
+        # 정상 상태에서는 Node C 분리 스위치 CLOSE
+        # 6003으로 0.0 전송
+        send_isolate_cmd_to_simulink(open_switch=False)
 
 # ================================
 # 다음 노드로 5개 값 그대로 forwarding
-# Simulink가 A에만 보내는 구조일 때 사용 가능
+# Simulink가 A에만 보내는 구조
 # A -> B -> C
 # ================================
 def send_values_to_next_node(values):
@@ -583,16 +643,19 @@ def receive_values():
     print(f"NEXT_NODE_PORT={NEXT_NODE_PORT}")
     print(f"SIMULINK_LAPTOP_IP={SIMULINK_LAPTOP_IP}")
     print(f"SIMULINK_ESS_PORT={SIMULINK_ESS_PORT}")
+    print(f"SIMULINK_ISOLATE_PORT={SIMULINK_ISOLATE_PORT}")
     print(f"BYTE_ORDER={BYTE_ORDER}")
     print(f"DATA_MODE={DATA_MODE}")
     print(f"CONF_THRESHOLD={CONF_THRESHOLD}")
     print(f"STALE_SEC={STALE_SEC}")
     print(f"ENABLE_SIMULINK_CONTROL={ENABLE_SIMULINK_CONTROL}")
     print(f"SEND_ON_CHANGE_ONLY={SEND_ON_CHANGE_ONLY}")
+    print(f"COMMAND_REPEAT={COMMAND_REPEAT}")
     print(f"DEBUG={DEBUG}")
     print("Expected packet: [Ia, Ib, Ic, Temperature, Sound]")
     print("Recommended packet length: 20 bytes = single 5 values")
     print("ESS command packet to Simulink: single 1 value, 4 bytes")
+    print("Isolate command packet to Simulink: single 1 value, 4 bytes")
     print("===================================")
 
     while True:
@@ -638,7 +701,7 @@ def receive_values():
         if not IS_MASTER:
             send_status_to_master(pred)
 
-        # A는 A/B/C 상태 기준으로 ESS 제어
+        # A는 A/B/C 상태 기준으로 ESS + 분리 스위치 제어
         if IS_MASTER:
             control_ess_by_ai_status()
 
