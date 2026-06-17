@@ -1,146 +1,207 @@
 import os
+import glob
 import joblib
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import classification_report
-from sklearn.metrics import confusion_matrix
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
-DATA_PATH = "data/regrid_real_data.csv"
-MODEL_PATH = "models/random_forest_fault_classifier.pkl"
+DATA_DIR = "data"
+MODEL_DIR = "models"
+MODEL_PATH = os.path.join(MODEL_DIR, "regrid_fault_model.pkl")
 
-os.makedirs("models", exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
 
-WINDOW_SIZE = 10
 
-df = pd.read_csv(DATA_PATH)
+def add_features(df):
+    eps = 1e-6
 
-df = df.dropna()
+    # 기본 전류 절댓값
+    df["Ia_abs"] = df["Ia"].abs()
+    df["Ib_abs"] = df["Ib"].abs()
+    df["Ic_abs"] = df["Ic"].abs()
 
-# -----------------------------
-# 기본 feature
-# -----------------------------
-df["Iab_diff"] = abs(df["Ia"] - df["Ib"])
-df["Ibc_diff"] = abs(df["Ib"] - df["Ic"])
-df["Ica_diff"] = abs(df["Ic"] - df["Ia"])
+    # 전류 통계값
+    df["I_sum"] = df["Ia_abs"] + df["Ib_abs"] + df["Ic_abs"]
+    df["I_mean"] = df[["Ia_abs", "Ib_abs", "Ic_abs"]].mean(axis=1)
+    df["I_max"] = df[["Ia_abs", "Ib_abs", "Ic_abs"]].max(axis=1)
+    df["I_min"] = df[["Ia_abs", "Ib_abs", "Ic_abs"]].min(axis=1)
+    df["I_range"] = df["I_max"] - df["I_min"]
+    df["I_std"] = df[["Ia_abs", "Ib_abs", "Ic_abs"]].std(axis=1)
 
-df["I_mean"] = (df["Ia"] + df["Ib"] + df["Ic"]) / 3
+    # 각 상 비율
+    df["Ia_ratio"] = df["Ia_abs"] / (df["I_sum"] + eps)
+    df["Ib_ratio"] = df["Ib_abs"] / (df["I_sum"] + eps)
+    df["Ic_ratio"] = df["Ic_abs"] / (df["I_sum"] + eps)
 
-df["I_unbalance"] = (
-    abs(df["Ia"] - df["I_mean"]) +
-    abs(df["Ib"] - df["I_mean"]) +
-    abs(df["Ic"] - df["I_mean"])
-)
+    # 상끼리 차이
+    df["Iab_diff"] = (df["Ia_abs"] - df["Ib_abs"]).abs()
+    df["Ibc_diff"] = (df["Ib_abs"] - df["Ic_abs"]).abs()
+    df["Ica_diff"] = (df["Ic_abs"] - df["Ia_abs"]).abs()
 
-df["I_sum"] = df["Ia"] + df["Ib"] + df["Ic"]
+    # 불평형 정도
+    df["imbalance"] = df["I_range"] / (df["I_mean"] + eps)
 
-# -----------------------------
-# Rolling Mean
-# -----------------------------
-df["Ia_mean_10"] = df["Ia"].rolling(WINDOW_SIZE).mean()
-df["Ib_mean_10"] = df["Ib"].rolling(WINDOW_SIZE).mean()
-df["Ic_mean_10"] = df["Ic"].rolling(WINDOW_SIZE).mean()
+    return df
 
-# -----------------------------
-# Rolling Variance
-# -----------------------------
-df["Ia_var_10"] = df["Ia"].rolling(WINDOW_SIZE).var()
-df["Ib_var_10"] = df["Ib"].rolling(WINDOW_SIZE).var()
-df["Ic_var_10"] = df["Ic"].rolling(WINDOW_SIZE).var()
 
-# -----------------------------
-# 변화량 feature
-# -----------------------------
-df["dIa"] = df["Ia"].diff()
-df["dIb"] = df["Ib"].diff()
-df["dIc"] = df["Ic"].diff()
+def main():
+    csv_files = sorted(glob.glob(os.path.join(DATA_DIR, "*.csv")))
 
-df = df.dropna()
+    if len(csv_files) == 0:
+        print("data 폴더에 CSV 파일이 없음")
+        return
 
-features = [
-    "Ia",
-    "Ib",
-    "Ic",
-    "temperature",
-    "sound",
+    print("읽은 CSV 파일:")
+    for file in csv_files:
+        print(" -", file)
 
-    "Iab_diff",
-    "Ibc_diff",
-    "Ica_diff",
+    df_list = []
 
-    "I_mean",
-    "I_unbalance",
-    "I_sum",
+    for file in csv_files:
+        temp = pd.read_csv(file)
 
-    "Ia_mean_10",
-    "Ib_mean_10",
-    "Ic_mean_10",
+        if len(temp) == 0:
+            print(f"비어있는 파일이라 제외: {file}")
+            continue
 
-    "Ia_var_10",
-    "Ib_var_10",
-    "Ic_var_10",
+        df_list.append(temp)
 
-    "dIa",
-    "dIb",
-    "dIc"
-]
+    if len(df_list) == 0:
+        print("사용 가능한 CSV 데이터가 없음")
+        return
 
-target = "fault_code"
+    df = pd.concat(df_list, ignore_index=True)
 
-X = df[features]
-y = df[target].astype(int)
+    print("\n전체 데이터 개수:", len(df))
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.2,
-    random_state=42,
-    stratify=y
-)
+    required_cols = [
+        "fault_code",
+        "fault_name",
+        "Ia",
+        "Ib",
+        "Ic",
+        "temperature",
+        "sound"
+    ]
 
-model = RandomForestClassifier(
-    n_estimators=500,
-    max_depth=20,
-    min_samples_split=3,
-    class_weight="balanced",
-    random_state=42
-)
+    for col in required_cols:
+        if col not in df.columns:
+            print(f"필수 컬럼 없음: {col}")
+            return
 
-model.fit(X_train, y_train)
+    # 숫자 변환
+    numeric_cols = ["fault_code", "Ia", "Ib", "Ic", "temperature", "sound"]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-y_pred = model.predict(X_test)
+    # 이상한 값 제거
+    df = df.dropna(subset=numeric_cols)
+    df["fault_code"] = df["fault_code"].astype(int)
 
-print("================================")
-print("RandomForest 결과")
-print("================================")
+    print("\n라벨별 데이터 개수:")
+    print(df["fault_code"].value_counts().sort_index())
 
-print("정확도:", accuracy_score(y_test, y_pred))
+    print("\n라벨 이름:")
+    label_table = df[["fault_code", "fault_name"]].drop_duplicates().sort_values("fault_code")
+    print(label_table.to_string(index=False))
 
-print()
-print(classification_report(y_test, y_pred))
+    # feature 생성
+    df = add_features(df)
 
-print()
-print(confusion_matrix(y_test, y_pred))
+    feature_cols = [
+        "Ia", "Ib", "Ic",
+        "Ia_abs", "Ib_abs", "Ic_abs",
+        "I_sum", "I_mean", "I_max", "I_min", "I_range", "I_std",
+        "Ia_ratio", "Ib_ratio", "Ic_ratio",
+        "Iab_diff", "Ibc_diff", "Ica_diff",
+        "imbalance",
+        "temperature", "sound"
+    ]
 
-# 중요 feature 확인
-importance_df = pd.DataFrame({
-    "feature": features,
-    "importance": model.feature_importances_
-})
+    X = df[feature_cols]
+    y = df["fault_code"]
 
-importance_df = importance_df.sort_values(
-    by="importance",
-    ascending=False
-)
+    # train/test 분리
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y
+    )
 
-print()
-print("중요 feature")
-print(importance_df)
+    print("\n학습 데이터 개수:", len(X_train))
+    print("테스트 데이터 개수:", len(X_test))
 
-joblib.dump(model, MODEL_PATH)
+    model = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=None,
+        random_state=42,
+        n_jobs=-1,
+        class_weight="balanced"
+    )
 
-print()
-print("모델 저장 완료:", MODEL_PATH)
+    print("\n모델 학습 중...")
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+
+    acc = accuracy_score(y_test, y_pred)
+
+    print("\n====================================")
+    print("학습 결과")
+    print("====================================")
+    print(f"정확도: {acc:.4f}")
+
+    print("\nclassification report:")
+    print(classification_report(y_test, y_pred))
+
+    labels = sorted(df["fault_code"].unique())
+    cm = confusion_matrix(y_test, y_pred, labels=labels)
+
+    cm_df = pd.DataFrame(
+        cm,
+        index=[f"true_{x}" for x in labels],
+        columns=[f"pred_{x}" for x in labels]
+    )
+
+    print("\nconfusion matrix:")
+    print(cm_df)
+
+    importances = model.feature_importances_
+    importance_df = pd.DataFrame({
+        "feature": feature_cols,
+        "importance": importances
+    }).sort_values("importance", ascending=False)
+
+    print("\nfeature importance TOP 10:")
+    print(importance_df.head(10).to_string(index=False))
+
+    # fault_code -> fault_name 저장
+    label_names = (
+        df[["fault_code", "fault_name"]]
+        .drop_duplicates()
+        .sort_values("fault_code")
+        .set_index("fault_code")["fault_name"]
+        .to_dict()
+    )
+
+    save_data = {
+        "model": model,
+        "feature_cols": feature_cols,
+        "label_names": label_names
+    }
+
+    joblib.dump(save_data, MODEL_PATH)
+
+    print("\n====================================")
+    print("모델 저장 완료")
+    print(f"저장 경로: {MODEL_PATH}")
+    print("====================================")
+
+
+if __name__ == "__main__":
+    main()
