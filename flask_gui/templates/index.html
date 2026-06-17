@@ -6,7 +6,9 @@
     <title>ReGrid Control</title>
 
     <style>
-        * { box-sizing: border-box; }
+        * {
+            box-sizing: border-box;
+        }
 
         body {
             margin: 0;
@@ -21,7 +23,7 @@
         }
 
         .app {
-            width: min(1280px, 100%);
+            width: min(1180px, 100%);
             padding: 32px;
             border-radius: 20px;
             background: rgba(255, 255, 255, 0.08);
@@ -29,18 +31,31 @@
             border: 1px solid rgba(255, 255, 255, 0.14);
         }
 
-        .header { margin-bottom: 22px; }
-        .title { font-size: 36px; font-weight: 900; margin: 0; }
-        .subtitle { margin-top: 8px; color: #d1d5db; font-size: 16px; }
+        .header {
+            margin-bottom: 22px;
+        }
+
+        .title {
+            font-size: 36px;
+            font-weight: 900;
+            margin: 0;
+        }
+
+        .subtitle {
+            margin-top: 8px;
+            color: #d1d5db;
+            font-size: 16px;
+        }
 
         .main-grid {
             display: grid;
-            grid-template-columns: 1fr 440px;
+            grid-template-columns: 1fr 420px;
             gap: 22px;
             align-items: start;
         }
 
-        .status-card, .video-card, .scenario-card {
+        .status-card,
+        .video-card {
             background: rgba(255, 255, 255, 0.12);
             border: 1px solid rgba(255, 255, 255, 0.18);
             padding: 22px 24px;
@@ -48,87 +63,267 @@
             margin-bottom: 22px;
         }
 
-        .status-label { color: #9ca3af; font-size: 14px; margin-bottom: 8px; font-weight: 700; }
-        .status-main { font-size: 34px; font-weight: 900; line-height: 1.1; }
-        .status-desc { margin-top: 6px; color: #d1d5db; font-size: 18px; }
-        .status-value { margin-top: 10px; color: #e5e7eb; font-size: 18px; font-family: Consolas, monospace; }
-        .ai-status { margin-top: 10px; color: #facc15; font-size: 16px; font-weight: 800; }
-        .camera-status { margin-top: 10px; font-size: 17px; font-weight: 900; color: #93c5fd; font-family: Consolas, monospace; }
+        .status-label {
+            color: #9ca3af;
+            font-size: 14px;
+            margin-bottom: 8px;
+            font-weight: 700;
+        }
 
-        .metric-grid {
+        .status-main {
+            font-size: 34px;
+            font-weight: 900;
+            line-height: 1.1;
+        }
+
+        .status-desc {
+            margin-top: 6px;
+            color: #d1d5db;
+            font-size: 18px;
+        }
+
+        .status-value {
+            margin-top: 10px;
+            color: #e5e7eb;
+            font-size: 18px;
+            font-family: Consolas, monospace;
+        }
+
+        .ai-status {
+            margin-top: 10px;
+            color: #facc15;
+            font-size: 16px;
+            font-weight: 800;
+        }
+
+        .camera-status {
+            margin-top: 10px;
+            font-size: 17px;
+            font-weight: 900;
+            color: #93c5fd;
+            font-family: Consolas, monospace;
+        }
+
+        .video-title {
+            font-size: 22px;
+            font-weight: 900;
+            margin-bottom: 12px;
+        }
+
+        .video-box {
+            width: 100%;
+            aspect-ratio: 4 / 3;
+            background: #020617;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .video-box img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .video-desc {
+            margin-top: 12px;
+            color: #d1d5db;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .button-area {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .row {
             display: grid;
+            gap: 16px;
+        }
+
+        .row-2 {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
+        .row-3 {
             grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-            margin-top: 16px;
         }
 
-        .metric {
-            border-radius: 14px;
-            background: rgba(15, 23, 42, 0.55);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            padding: 12px;
+        .section-title {
+            margin-top: 8px;
+            color: #d1d5db;
+            font-size: 15px;
+            font-weight: 800;
         }
-
-        .metric-label { font-size: 12px; color: #9ca3af; font-weight: 900; }
-        .metric-value { margin-top: 4px; font-family: Consolas, monospace; font-size: 20px; font-weight: 900; }
-
-        .video-title, .scenario-title { font-size: 22px; font-weight: 900; margin-bottom: 12px; }
-        .video-box { width: 100%; aspect-ratio: 4 / 3; background: #020617; border-radius: 16px; overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.18); }
-        .video-box img { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .video-desc, .scenario-desc { margin-top: 12px; color: #d1d5db; font-size: 14px; line-height: 1.5; }
-
-        .button-area { display: flex; flex-direction: column; gap: 12px; }
-        .row { display: grid; gap: 16px; }
-        .row-2 { grid-template-columns: repeat(2, 1fr); }
-        .row-3 { grid-template-columns: repeat(3, 1fr); }
-        .section-title { margin-top: 8px; color: #d1d5db; font-size: 15px; font-weight: 800; }
 
         button {
             border: none;
             border-radius: 16px;
-            padding: 18px 12px;
+            padding: 20px 12px;
             color: white;
             cursor: pointer;
-            font-size: 16px;
+            font-size: 17px;
             font-weight: 800;
             transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
             box-shadow: 0 12px 26px rgba(0, 0, 0, 0.24);
-            min-height: 98px;
+            min-height: 92px;
         }
 
-        button:hover { transform: translateY(-3px); filter: brightness(1.08); box-shadow: 0 18px 34px rgba(0, 0, 0, 0.30); }
-        button:active { transform: translateY(1px); }
-        button:disabled { cursor: wait; opacity: 0.55; transform: none; }
-        .wide-btn { min-height: 82px; padding: 18px 12px; }
-        .power-on { background: linear-gradient(135deg, #15803d, #22c55e); }
-        .power-off { background: linear-gradient(135deg, #374151, #6b7280); }
-        .fault-0 { background: linear-gradient(135deg, #0369a1, #38bdf8); }
-        .fault-1 { background: linear-gradient(135deg, #b91c1c, #ef4444); }
-        .fault-2, .fault-3, .fault-4 { background: linear-gradient(135deg, #c2410c, #f97316); }
-        .fault-5, .fault-6, .fault-7 { background: linear-gradient(135deg, #a16207, #eab308); }
-        .fault-8 { background: linear-gradient(135deg, #6d28d9, #8b5cf6); }
-        .fault-9 { background: linear-gradient(135deg, #9f1239, #e11d48); }
-        .camera-on { background: linear-gradient(135deg, #0f766e, #14b8a6); }
-        .camera-off { background: linear-gradient(135deg, #4b5563, #9ca3af); }
-        .code { font-size: 25px; display: block; margin-bottom: 8px; }
-        .desc { font-size: 13px; opacity: 0.95; font-weight: 700; line-height: 1.35; }
+        button:hover {
+            transform: translateY(-3px);
+            filter: brightness(1.08);
+            box-shadow: 0 18px 34px rgba(0, 0, 0, 0.30);
+        }
 
-        .scenario-table-wrap { overflow-x: auto; margin-top: 8px; }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        th, td { padding: 9px 8px; border-bottom: 1px solid rgba(255,255,255,0.12); text-align: left; white-space: nowrap; }
-        th { color: #bfdbfe; font-size: 12px; }
-        td.current { font-family: Consolas, monospace; font-weight: 900; }
-        tr.active-row { background: rgba(250, 204, 21, 0.18); }
+        button:active {
+            transform: translateY(1px);
+        }
 
-        .footer { margin-top: 22px; color: #9ca3af; font-size: 13px; text-align: right; font-family: Consolas, monospace; }
+        button:disabled {
+            cursor: wait;
+            opacity: 0.55;
+            transform: none;
+        }
 
-        @media (max-width: 1000px) { .main-grid { grid-template-columns: 1fr; } }
+        .wide-btn {
+            min-height: 82px;
+            padding: 18px 12px;
+        }
+
+        .power-on {
+            background: linear-gradient(135deg, #15803d, #22c55e);
+        }
+
+        .power-off {
+            background: linear-gradient(135deg, #374151, #6b7280);
+        }
+
+        .fault-0 {
+            background: linear-gradient(135deg, #0369a1, #38bdf8);
+        }
+
+        .fault-1 {
+            background: linear-gradient(135deg, #b91c1c, #ef4444);
+        }
+
+        .fault-2,
+        .fault-3,
+        .fault-4 {
+            background: linear-gradient(135deg, #c2410c, #f97316);
+        }
+
+        .fault-5,
+        .fault-6,
+        .fault-7 {
+            background: linear-gradient(135deg, #a16207, #eab308);
+        }
+
+        .fault-8 {
+            background: linear-gradient(135deg, #6d28d9, #8b5cf6);
+        }
+
+        .fault-9 {
+            background: linear-gradient(135deg, #9f1239, #e11d48);
+        }
+
+        .camera-on {
+            background: linear-gradient(135deg, #0f766e, #14b8a6);
+        }
+
+        .camera-off {
+            background: linear-gradient(135deg, #4b5563, #9ca3af);
+        }
+
+        .code {
+            font-size: 26px;
+            display: block;
+            margin-bottom: 8px;
+        }
+
+        .desc {
+            font-size: 14px;
+            opacity: 0.95;
+            font-weight: 700;
+        }
+
+        .footer {
+            margin-top: 22px;
+            color: #9ca3af;
+            font-size: 13px;
+            text-align: right;
+            font-family: Consolas, monospace;
+        }
+
+
+        .reference-table-wrap {
+            margin-top: 14px;
+            overflow-x: auto;
+        }
+
+        .reference-note {
+            margin-top: 10px;
+            color: #facc15;
+            font-size: 13px;
+            line-height: 1.5;
+            font-weight: 800;
+        }
+
+        .reference-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            color: #f9fafb;
+        }
+
+        .reference-table th,
+        .reference-table td {
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            padding: 8px 7px;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .reference-table th {
+            background: rgba(255, 255, 255, 0.12);
+            color: #e5e7eb;
+            font-weight: 900;
+        }
+
+        .reference-table td:nth-child(4) {
+            text-align: left;
+        }
+
+        @media (max-width: 1000px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
         @media (max-width: 760px) {
-            body { align-items: flex-start; padding: 18px; }
-            .app { padding: 24px; }
-            .title { font-size: 30px; }
-            .row-2, .row-3, .metric-grid { grid-template-columns: 1fr; }
-            button { min-height: 82px; }
+            body {
+                align-items: flex-start;
+                padding: 18px;
+            }
+
+            .app {
+                padding: 24px;
+            }
+
+            .title {
+                font-size: 30px;
+            }
+
+            .row-2,
+            .row-3 {
+                grid-template-columns: 1fr;
+            }
+
+            button {
+                min-height: 82px;
+            }
         }
     </style>
 </head>
@@ -138,7 +333,7 @@
         <div class="header">
             <h1 class="title">ReGrid Control</h1>
             <div class="subtitle">
-                22.9kV 고압 기준 테스트 · 고장 코드별 목표 상전류 시나리오
+                22.9kV 메인 전압 및 고장 코드 입력
             </div>
         </div>
 
@@ -146,31 +341,37 @@
             <div class="left-panel">
                 <div class="status-card">
                     <div class="status-label">현재 상태</div>
-                    <div class="status-main" id="statusCode">{{ state.label }} 입력</div>
+
+                    <div class="status-main" id="statusCode">
+                        {{ state.label }} 입력
+                    </div>
+
                     <div class="status-desc" id="statusDesc">
-                        {{ state.fault_type }} · {{ state.fault_details }}
+                        메인 전압={{ state.voltage }}V, 고장 상황 코드={{ state.code }} 전송 명령
                     </div>
+
                     <div class="status-value" id="statusValue">
-                        V={{ state.voltage }} / CODE={{ state.code }} / FC={{ state.fc }}
+                        MAIN V={{ state.voltage }}V / CODE={{ state.code }}
                     </div>
 
-                    <div class="metric-grid">
-                        <div class="metric"><div class="metric-label">Phase A</div><div class="metric-value" id="currentA">{{ "{:,.0f}".format(state.currents.A) }} A</div></div>
-                        <div class="metric"><div class="metric-label">Phase B</div><div class="metric-value" id="currentB">{{ "{:,.0f}".format(state.currents.B) }} A</div></div>
-                        <div class="metric"><div class="metric-label">Phase C</div><div class="metric-value" id="currentC">{{ "{:,.0f}".format(state.currents.C) }} A</div></div>
+                    <div class="ai-status" id="aiStatus">
+                        CONTROL: {{ state.ai }}
                     </div>
 
-                    <div class="ai-status" id="aiStatus">CONTROL: {{ state.ai }}</div>
-                    <div class="camera-status" id="cameraStatus">CAMERA: {{ "ON" if state.camera_mode else "OFF" }}</div>
+                    <div class="camera-status" id="cameraStatus">
+                        CAMERA: {{ "ON" if state.camera_mode else "OFF" }}
+                    </div>
                 </div>
 
                 <div class="button-area">
                     <div class="section-title">전원 입력 명령</div>
+
                     <div class="row row-2">
                         <button class="power-on wide-btn" onclick="powerOn()">
                             <span class="code">POWER ON</span>
-                            <span class="desc">22.9kV 전원 인가<br>정상 200 / 200 / 200 A</span>
+                            <span class="desc">22.9kV 메인 전압 인가</span>
                         </button>
+
                         <button class="power-off wide-btn" onclick="powerOff()">
                             <span class="code">POWER OFF</span>
                             <span class="desc">전원 차단</span>
@@ -178,15 +379,18 @@
                     </div>
 
                     <div class="section-title">시뮬레이션 해제 / 카메라 제어</div>
+
                     <div class="row row-3">
                         <button class="fault-0 wide-btn" onclick="resetFault()">
                             <span class="code">RESET</span>
-                            <span class="desc">정상 N<br>200 / 200 / 200 A</span>
+                            <span class="desc">고장코드 0</span>
                         </button>
+
                         <button id="cameraOnBtn" class="camera-on wide-btn" onclick="cameraOn()">
                             <span class="code">CAMERA ON</span>
                             <span class="desc">카메라 감지 활성화</span>
                         </button>
+
                         <button id="cameraOffBtn" class="camera-off wide-btn" onclick="cameraOff()">
                             <span class="code">CAMERA OFF</span>
                             <span class="desc">카메라 감지 비활성화</span>
@@ -194,50 +398,59 @@
                     </div>
 
                     <div class="section-title">고장 시뮬레이션 입력</div>
+
                     <div class="row row-3">
                         <button class="fault-1" onclick="sendPreset(1)">
                             <span class="code">F1</span>
-                            <span class="desc">3상 단락<br>8,000 / 8,000 / 8,000 A</span>
+                            <span class="desc">3상 단락</span>
                         </button>
+
                         <button class="fault-8" onclick="sendPreset(8)">
                             <span class="code">TEMP</span>
-                            <span class="desc">온도 높음<br>전류 정상 기준 유지</span>
+                            <span class="desc">온도 높음</span>
                         </button>
+
                         <button class="fault-9" onclick="sendPreset(9)">
                             <span class="code">SPARK</span>
-                            <span class="desc">스파크 감지<br>전류 정상 기준 유지</span>
+                            <span class="desc">스파크 감지</span>
                         </button>
                     </div>
 
                     <div class="section-title">2상 단락 시뮬레이션 입력</div>
+
                     <div class="row row-3">
                         <button class="fault-2" onclick="sendPreset(2)">
                             <span class="code">F2</span>
-                            <span class="desc">A-B 단락<br>6,500 / 6,500 / 200 A</span>
+                            <span class="desc">A-B 단락</span>
                         </button>
+
                         <button class="fault-3" onclick="sendPreset(3)">
                             <span class="code">F3</span>
-                            <span class="desc">B-C 단락<br>200 / 6,500 / 6,500 A</span>
+                            <span class="desc">B-C 단락</span>
                         </button>
+
                         <button class="fault-4" onclick="sendPreset(4)">
                             <span class="code">F4</span>
-                            <span class="desc">C-A 단락<br>6,500 / 200 / 6,500 A</span>
+                            <span class="desc">C-A 단락</span>
                         </button>
                     </div>
 
                     <div class="section-title">지락 고장 시뮬레이션 입력</div>
+
                     <div class="row row-3">
                         <button class="fault-5" onclick="sendPreset(5)">
                             <span class="code">F5</span>
-                            <span class="desc">A상 지락<br>4,500 / 250 / 250 A</span>
+                            <span class="desc">A상 지락</span>
                         </button>
+
                         <button class="fault-6" onclick="sendPreset(6)">
                             <span class="code">F6</span>
-                            <span class="desc">B상 지락<br>250 / 4,500 / 250 A</span>
+                            <span class="desc">B상 지락</span>
                         </button>
+
                         <button class="fault-7" onclick="sendPreset(7)">
                             <span class="code">F7</span>
-                            <span class="desc">C상 지락<br>250 / 250 / 4,500 A</span>
+                            <span class="desc">C상 지락</span>
                         </button>
                     </div>
                 </div>
@@ -246,120 +459,138 @@
             <div class="right-panel">
                 <div class="video-card">
                     <div class="video-title">Vision AI Spark Detection</div>
-                    <div class="video-box"><img id="cameraFeed" src="/video_feed" alt="YOLO Video Feed"></div>
+
+                    <div class="video-box">
+                        <img id="cameraFeed" src="/video_feed" alt="YOLO Video Feed">
+                    </div>
+
                     <div class="video-desc" id="videoDesc">
                         CAMERA ON 상태에서는 YOLO가 스파크를 감지하면 자동으로 fault_code_cmd=9를 전송합니다.
                     </div>
                 </div>
 
-                <div class="scenario-card">
-                    <div class="scenario-title">고압 기준 시나리오 표</div>
-                    <div class="scenario-desc">전압 기준: 22.9kV · 전류 단위: A · 표의 FC는 AI/데이터셋 라벨 확인용입니다.</div>
-                    <div class="scenario-table-wrap">
-                        <table>
+                <div class="video-card">
+                    <div class="video-title">AI Learning Reference Current Table</div>
+                    <div class="video-desc">
+                        아래 전류값은 AI 학습 및 고장 분류 기준표입니다. Simulink에 강제로 흘리는 전류값이 아니며, Flask는 메인 전압 22.9kV와 fault_code_cmd만 전송합니다.
+                    </div>
+
+                    <div class="reference-table-wrap">
+                        <table class="reference-table">
                             <thead>
                                 <tr>
-                                    <th>Case</th><th>State</th><th>Type</th><th>Details</th><th>A</th><th>B</th><th>C</th><th>FC</th>
+                                    <th>Case</th>
+                                    <th>State</th>
+                                    <th>Fault</th>
+                                    <th>Details</th>
+                                    <th>Ia(A)</th>
+                                    <th>Ib(A)</th>
+                                    <th>Ic(A)</th>
+                                    <th>FC</th>
                                 </tr>
                             </thead>
-                            <tbody id="scenarioTableBody">
-                                {% for s in scenarios %}
-                                <tr data-fault-type="{{ s.fault_type }}" data-fc="{{ s.fc }}">
-                                    <td>{{ s.case }}</td>
-                                    <td>{{ s.system_state }}</td>
-                                    <td>{{ s.fault_type }}</td>
-                                    <td>{{ s.fault_details }}</td>
-                                    <td class="current">{{ "{:,.0f}".format(s.currents.A) }}</td>
-                                    <td class="current">{{ "{:,.0f}".format(s.currents.B) }}</td>
-                                    <td class="current">{{ "{:,.0f}".format(s.currents.C) }}</td>
-                                    <td>{{ s.fc }}</td>
-                                </tr>
-                                {% endfor %}
+                            <tbody>
+                                <tr><td>1</td><td>F</td><td>F1</td><td>3상 단락 A-B-C</td><td>8,000</td><td>8,000</td><td>8,000</td><td>1</td></tr>
+                                <tr><td>2</td><td>F</td><td>F2</td><td>2상 단락 A-B</td><td>6,500</td><td>6,500</td><td>200</td><td>2</td></tr>
+                                <tr><td>3</td><td>F</td><td>F3</td><td>2상 단락 B-C</td><td>200</td><td>6,500</td><td>6,500</td><td>3</td></tr>
+                                <tr><td>4</td><td>F</td><td>F4</td><td>2상 단락 C-A</td><td>6,500</td><td>200</td><td>6,500</td><td>4</td></tr>
+                                <tr><td>5</td><td>F</td><td>F5</td><td>1선 지락 A-G</td><td>4,500</td><td>250</td><td>250</td><td>5</td></tr>
+                                <tr><td>6</td><td>F</td><td>F6</td><td>1선 지락 B-G</td><td>250</td><td>4,500</td><td>250</td><td>6</td></tr>
+                                <tr><td>7</td><td>F</td><td>F7</td><td>1선 지락 C-G</td><td>250</td><td>250</td><td>4,500</td><td>7</td></tr>
+                                <tr><td>8</td><td>N</td><td>N</td><td>정상</td><td>200</td><td>200</td><td>200</td><td>8</td></tr>
                             </tbody>
                         </table>
                     </div>
+
+                    <div class="reference-note">
+                        주의: 위 표는 AI 기준표입니다. 실제 Simulink 회로 전류는 회로 전원, 부하, 고장 임피던스에 의해 생성됩니다.
+                    </div>
                 </div>
+
             </div>
         </div>
 
         <div class="footer">
-            MATLAB Engine: ReGridEngine / Blocks: voltage_cmd, fault_code_cmd / DEFAULT VOLTAGE: 22.9kV
+            MATLAB Engine: ReGridEngine / Blocks: voltage_cmd, fault_code_cmd / Current table: AI reference only
         </div>
     </div>
 
     <script>
-        const DEFAULT_VOLTAGE = {{ default_voltage | default(22900) }};
         let busy = false;
 
         function valueOrDefault(value, defaultValue) {
-            if (value === undefined || value === null) return defaultValue;
+            if (value === undefined || value === null) {
+                return defaultValue;
+            }
             return value;
-        }
-
-        function formatNumber(value) {
-            const num = Number(value || 0);
-            return num.toLocaleString("ko-KR", { maximumFractionDigits: 0 });
-        }
-
-        function formatVoltage(value) {
-            const num = Number(value || 0);
-            if (num >= 1000) return `${(num / 1000).toFixed(1)}kV`;
-            return `${num.toLocaleString("ko-KR")}V`;
         }
 
         function setBusy(value) {
             busy = value;
-            document.querySelectorAll("button").forEach(btn => { btn.disabled = value; });
-        }
 
-        function updateScenarioHighlight(data) {
-            const faultType = valueOrDefault(data.fault_type, "N");
-            const rows = document.querySelectorAll("#scenarioTableBody tr");
-            rows.forEach(row => {
-                row.classList.toggle("active-row", row.dataset.faultType === faultType);
+            const buttons = document.querySelectorAll("button");
+            buttons.forEach(btn => {
+                btn.disabled = value;
             });
         }
 
         function updateStatus(data) {
-            const voltage = valueOrDefault(data.voltage, DEFAULT_VOLTAGE);
+            const voltage = valueOrDefault(data.voltage, 22900);
             const code = valueOrDefault(data.code, valueOrDefault(data.fault_code, 0));
-            const fc = valueOrDefault(data.fc, "-");
-            const faultType = valueOrDefault(data.fault_type, "N");
-            const faultDetails = valueOrDefault(data.fault_details, valueOrDefault(data.desc, "정상"));
             const label = valueOrDefault(data.command_label, `${valueOrDefault(data.label, "NORMAL")} 입력`);
+
             const desc = valueOrDefault(
                 data.command_desc,
-                `${formatVoltage(voltage)} 기준 | ${faultType} ${faultDetails} | fault_code_cmd=${code}`
+                `Simulink main_voltage_cmd=${voltage}V, fault_code_cmd=${code} 전송 명령`
             );
+
             const ai = valueOrDefault(data.ai, "대기 중");
             const cameraMode = valueOrDefault(data.camera_mode, false);
-            const currents = valueOrDefault(data.currents, {A: 200, B: 200, C: 200});
 
             document.getElementById("statusCode").innerText = label;
             document.getElementById("statusDesc").innerText = desc;
-            document.getElementById("statusValue").innerText = `${formatVoltage(voltage)} / CODE=${code} / FC=${fc}`;
-            document.getElementById("currentA").innerText = `${formatNumber(currents.A ?? currents.Ia)} A`;
-            document.getElementById("currentB").innerText = `${formatNumber(currents.B ?? currents.Ib)} A`;
-            document.getElementById("currentC").innerText = `${formatNumber(currents.C ?? currents.Ic)} A`;
+            document.getElementById("statusValue").innerText = `MAIN V=${voltage}V / CODE=${code}`;
             document.getElementById("aiStatus").innerText = `CONTROL: ${ai}`;
-            document.getElementById("cameraStatus").innerText = cameraMode ? "CAMERA: ON" : "CAMERA: OFF";
-            document.getElementById("videoDesc").innerText = cameraMode
-                ? "CAMERA ON: YOLO 감지 활성화. 스파크 감지 시 자동 전송"
-                : "CAMERA OFF: YOLO 스파크 감지 비활성화";
-            updateScenarioHighlight(data);
+
+            document.getElementById("cameraStatus").innerText =
+                cameraMode ? "CAMERA: ON" : "CAMERA: OFF";
+
+            document.getElementById("videoDesc").innerText =
+                cameraMode
+                    ? "CAMERA ON: YOLO 감지 활성화. 스파크 감지 시 자동 전송"
+                    : "CAMERA OFF: YOLO 스파크 감지 비활성화";
         }
 
         async function postJson(url, body = null) {
-            if (busy) return null;
+            if (busy) {
+                return null;
+            }
+
             setBusy(true);
+
             try {
-                const options = { method: "POST", headers: { "Content-Type": "application/json" } };
-                if (body !== null) options.body = JSON.stringify(body);
+                const options = {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    }
+                };
+
+                if (body !== null) {
+                    options.body = JSON.stringify(body);
+                }
+
                 const response = await fetch(url, options);
                 const data = await response.json();
+
                 console.log(url, data);
-                if (data.ok) updateStatus(data);
-                else alert(data.error || "전송 실패");
+
+                if (data.ok) {
+                    updateStatus(data);
+                } else {
+                    alert(data.error || "전송 실패");
+                }
+
                 return data;
             } catch (error) {
                 console.error(url, error);
@@ -370,21 +601,37 @@
             }
         }
 
-        async function sendPreset(code) { await postJson(`/preset/${code}`); }
-        async function resetFault() { await postJson("/reset"); }
-        async function powerOn() { await postJson("/power/on", { voltage: DEFAULT_VOLTAGE }); }
-        async function powerOff() { await postJson("/power/off"); }
+        async function sendPreset(code) {
+            await postJson(`/preset/${code}`);
+        }
+
+        async function resetFault() {
+            await postJson("/reset");
+        }
+
+        async function powerOn() {
+            await postJson("/power/on", {
+                voltage: 22900
+            });
+        }
+
+        async function powerOff() {
+            await postJson("/power/off");
+        }
 
         async function cameraOn() {
             const data = await postJson("/camera/on");
+
             if (data && data.ok) {
-                document.getElementById("cameraFeed").src = "/video_feed?t=" + new Date().getTime();
+                const feed = document.getElementById("cameraFeed");
+                feed.src = "/video_feed?t=" + new Date().getTime();
                 alert("카메라 ON 완료");
             }
         }
 
         async function cameraOff() {
             const data = await postJson("/camera/off");
+
             if (data && data.ok) {
                 updateStatus(data);
                 alert("카메라 OFF 완료");
@@ -392,11 +639,17 @@
         }
 
         async function refreshState() {
-            if (busy) return;
+            if (busy) {
+                return;
+            }
+
             try {
                 const response = await fetch("/state");
                 const data = await response.json();
-                if (data.ok) updateStatus(data);
+
+                if (data.ok) {
+                    updateStatus(data);
+                }
             } catch (error) {
                 console.log("state refresh error", error);
             }

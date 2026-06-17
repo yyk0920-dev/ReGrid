@@ -1,8 +1,12 @@
 import os
 import sys
+import socket
+import struct
 import threading
 import time
+import csv
 from pathlib import Path
+
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
@@ -27,7 +31,6 @@ use_project_venv_when_run_directly()
 
 import cv2
 from flask import Flask, Response, jsonify, render_template, request
-import matlab.engine
 from ultralytics import YOLO
 
 from n8n_webhook import get_webhook_urls, send_daily_report_request, send_regrid_event
@@ -37,34 +40,34 @@ app = Flask(__name__)
 HOST = "127.0.0.1"
 PORT = 8000
 
-MODEL_PATH = r"C:\Users\20240620-LapTop\Documents\카카오톡 받은 파일\circuit4.slx"
+# ============================================================
+# ReGrid command mode
+# ============================================================
+# 현재 구조:
+# Flask GUI 버튼 입력
+# → UDP로 Simulink UDP Receive에 [voltage_cmd, fault_code_cmd] 전송
+#
+# Simulink UDP Receive 설정:
+# Local address: 0.0.0.0
+# Local port: 6008
+# Remote address: 0.0.0.0
+# Data size: [2 1]
+# Source data type: single
+# Byte order: big-endian
+# ============================================================
 
-MODEL_NAME = "circuit4"
-ENGINE_NAME = "ReGridEngine"
-MATLAB_START_OPTIONS = "-desktop -nosplash"
+COMMAND_MODE = "UDP"
 
-VOLTAGE_BLOCK = f"{MODEL_NAME}/voltage_cmd"
-FAULT_BLOCK = f"{MODEL_NAME}/fault_code_cmd"
+SIMULINK_UDP_IP = os.getenv("REGRID_SIMULINK_UDP_IP", "127.0.0.1")
+SIMULINK_UDP_PORT = int(os.getenv("REGRID_SIMULINK_UDP_PORT", "6008"))
+
+# Simulink 쪽 Remote address를 0.0.0.0으로 해두면 source port는 크게 상관없음.
+# 그래도 필요할 때를 대비해서 기본 송신 포트는 7008로 둠.
+SIMULINK_UDP_LOCAL_PORT = int(os.getenv("REGRID_SIMULINK_UDP_LOCAL_PORT", "7008"))
 
 DEFAULT_VOLTAGE = 22900.0
 POWER_OFF_VOLTAGE = 0.0
 
-SCENARIOS = [
-    {"case": "N", "code": 0, "system_state": "NORMAL", "fault_type": "N", "fault_details": "정상 운전", "currents": {"A": 200.0, "B": 200.0, "C": 200.0}, "fc": 0},
-    {"case": "F1", "code": 1, "system_state": "FAULT", "fault_type": "3상 단락", "fault_details": "A-B-C 단락", "currents": {"A": 8000.0, "B": 8000.0, "C": 8000.0}, "fc": 1},
-    {"case": "F2", "code": 2, "system_state": "FAULT", "fault_type": "2상 단락", "fault_details": "A-B 단락", "currents": {"A": 6500.0, "B": 6500.0, "C": 200.0}, "fc": 2},
-    {"case": "F3", "code": 3, "system_state": "FAULT", "fault_type": "2상 단락", "fault_details": "B-C 단락", "currents": {"A": 200.0, "B": 6500.0, "C": 6500.0}, "fc": 3},
-    {"case": "F4", "code": 4, "system_state": "FAULT", "fault_type": "2상 단락", "fault_details": "C-A 단락", "currents": {"A": 6500.0, "B": 200.0, "C": 6500.0}, "fc": 4},
-    {"case": "F5", "code": 5, "system_state": "FAULT", "fault_type": "지락", "fault_details": "A상 지락", "currents": {"A": 4500.0, "B": 250.0, "C": 250.0}, "fc": 5},
-    {"case": "F6", "code": 6, "system_state": "FAULT", "fault_type": "지락", "fault_details": "B상 지락", "currents": {"A": 250.0, "B": 4500.0, "C": 250.0}, "fc": 6},
-    {"case": "F7", "code": 7, "system_state": "FAULT", "fault_type": "지락", "fault_details": "C상 지락", "currents": {"A": 250.0, "B": 250.0, "C": 4500.0}, "fc": 7},
-    {"case": "TEMP", "code": 8, "system_state": "FAULT", "fault_type": "온도", "fault_details": "온도 높음", "currents": {"A": 200.0, "B": 200.0, "C": 200.0}, "fc": 8},
-    {"case": "SPARK", "code": 9, "system_state": "FAULT", "fault_type": "스파크", "fault_details": "스파크 감지", "currents": {"A": 200.0, "B": 200.0, "C": 200.0}, "fc": 9},
-]
-SCENARIO_BY_CODE = {item["code"]: item for item in SCENARIOS}
-
-eng = None
-eng_lock = threading.Lock()
 state_lock = threading.Lock()
 camera_lock = threading.Lock()
 
@@ -88,11 +91,7 @@ state = {
     "fault_code": 0,
     "fault_name": "NORMAL",
     "label": "POWER ON",
-    "desc": "정상 전원 인가",
-    "fault_type": "N",
-    "fault_details": "정상 운전",
-    "currents": {"A": 200.0, "B": 200.0, "C": 200.0},
-    "fc": 0,
+    "desc": "22.9kV 메인 전원 인가",
     "ai": "대기 중",
     "camera_mode": False,
 }
@@ -110,89 +109,172 @@ faults = {
     9: ("SPARK", "스파크 감지", "F9_SPARK"),
 }
 
-def init_matlab():
-    global eng
+# 이 표는 AI 학습/분류 기준표임.
+# Simulink로 강제로 흘려보내는 전류값이 아님.
+AI_REFERENCE_SCENARIOS = {
+    0: {
+        "case": 8,
+        "system_state": "N",
+        "fault_type": "N",
+        "fault_details": "정상",
+        "phase_current_a": 200,
+        "phase_current_b": 200,
+        "phase_current_c": 200,
+        "fc": 8,
+    },
+    1: {
+        "case": 1,
+        "system_state": "F",
+        "fault_type": "F1",
+        "fault_details": "3상 단락 (A-B-C)",
+        "phase_current_a": 8000,
+        "phase_current_b": 8000,
+        "phase_current_c": 8000,
+        "fc": 1,
+    },
+    2: {
+        "case": 2,
+        "system_state": "F",
+        "fault_type": "F2",
+        "fault_details": "2상 단락 (A-B)",
+        "phase_current_a": 6500,
+        "phase_current_b": 6500,
+        "phase_current_c": 200,
+        "fc": 2,
+    },
+    3: {
+        "case": 3,
+        "system_state": "F",
+        "fault_type": "F3",
+        "fault_details": "2상 단락 (B-C)",
+        "phase_current_a": 200,
+        "phase_current_b": 6500,
+        "phase_current_c": 6500,
+        "fc": 3,
+    },
+    4: {
+        "case": 4,
+        "system_state": "F",
+        "fault_type": "F4",
+        "fault_details": "2상 단락 (C-A)",
+        "phase_current_a": 6500,
+        "phase_current_b": 200,
+        "phase_current_c": 6500,
+        "fc": 4,
+    },
+    5: {
+        "case": 5,
+        "system_state": "F",
+        "fault_type": "F5",
+        "fault_details": "1선 지락 (A-G)",
+        "phase_current_a": 4500,
+        "phase_current_b": 250,
+        "phase_current_c": 250,
+        "fc": 5,
+    },
+    6: {
+        "case": 6,
+        "system_state": "F",
+        "fault_type": "F6",
+        "fault_details": "1선 지락 (B-G)",
+        "phase_current_a": 250,
+        "phase_current_b": 4500,
+        "phase_current_c": 250,
+        "fc": 6,
+    },
+    7: {
+        "case": 7,
+        "system_state": "F",
+        "fault_type": "F7",
+        "fault_details": "1선 지락 (C-G)",
+        "phase_current_a": 250,
+        "phase_current_b": 250,
+        "phase_current_c": 4500,
+        "fc": 7,
+    },
+}
 
-    if eng is not None:
-        return eng
 
-    print("[MATLAB] Connecting to MATLAB Engine...", flush=True)
-
-    names = matlab.engine.find_matlab()
-    print(f"[MATLAB] Available engines: {names}", flush=True)
-
-    if ENGINE_NAME in names:
-        try:
-            eng = matlab.engine.connect_matlab(ENGINE_NAME)
-            print(f"[MATLAB] Connected to existing shared MATLAB: {ENGINE_NAME}", flush=True)
-        except Exception as e:
-            print(f"[MATLAB] Failed to connect shared MATLAB {ENGINE_NAME}: {e}", flush=True)
-
-    if eng is None:
-        try:
-            print("[MATLAB] Starting MATLAB Engine in this Python session...", flush=True)
-            eng = matlab.engine.start_matlab(MATLAB_START_OPTIONS)
-            print("[MATLAB] Started MATLAB Engine", flush=True)
-        except Exception as e:
-            raise RuntimeError(
-                "MATLAB Engine 연결 실패. MATLAB과 이 터미널 권한을 같게 맞추거나 "
-                "관리자 PowerShell에서 실행하세요."
-            ) from e
-
-    try:
-        eng.load_system(MODEL_PATH, nargout=0)
-        print(f"[MATLAB] Loaded model: {MODEL_PATH}", flush=True)
-    except Exception as e:
-        print(f"[MATLAB] load_system failed: {e}", flush=True)
-        print("[MATLAB] 이미 모델이 열려 있다면 무시 가능할 수 있음", flush=True)
-
-    print("[MATLAB] Engine ready", flush=True)
-
-    return eng
+def get_ai_reference(code):
+    code = int(code)
+    return AI_REFERENCE_SCENARIOS.get(code, AI_REFERENCE_SCENARIOS[0])
 
 
 def send_to_simulink(voltage, code, print_log=False):
+    """
+    Flask → Simulink UDP command sender.
+
+    전송 데이터:
+    [voltage_cmd, fault_code_cmd]
+
+    voltage_cmd:
+    - 22900.0 = 22.9kV 메인 전압 인가
+    - 0.0 = 전원 OFF
+
+    fault_code_cmd:
+    - 0 = 정상
+    - 1~7 = 전력 고장 시나리오
+    - 8 = 온도 고장
+    - 9 = 스파크 고장
+
+    주의:
+    AI_REFERENCE_SCENARIOS의 전류값은 Simulink로 보내지 않음.
+    """
     voltage = float(voltage)
     code = int(code)
 
-    with eng_lock:
-        engine = init_matlab()
+    packet = struct.pack("!2f", voltage, float(code))
 
-        engine.set_param(
-            VOLTAGE_BLOCK,
-            "Value",
-            str(voltage),
-            nargout=0,
-        )
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    local_port = "auto"
 
-        engine.set_param(
-            FAULT_BLOCK,
-            "Value",
-            str(float(code)),
-            nargout=0,
-        )
+    try:
+        try:
+            # Simulink UDP Receive의 Remote port를 특정 포트로 제한한 경우를 대비.
+            # 이미 포트가 사용 중이면 자동 포트로 전송.
+            sock.bind(("0.0.0.0", SIMULINK_UDP_LOCAL_PORT))
+            local_port = SIMULINK_UDP_LOCAL_PORT
+        except OSError as e:
+            print(
+                f"[SIMULINK UDP] local port {SIMULINK_UDP_LOCAL_PORT} bind failed: {e}. "
+                f"Using auto source port.",
+                flush=True,
+            )
 
-        v_read = engine.get_param(VOLTAGE_BLOCK, "Value")
-        c_read = engine.get_param(FAULT_BLOCK, "Value")
+        sock.sendto(packet, (SIMULINK_UDP_IP, SIMULINK_UDP_PORT))
+
+    finally:
+        sock.close()
 
     print(
-        f"[SIMULINK READBACK] voltage_cmd={v_read}, fault_code_cmd={c_read}",
+        f"[SIMULINK UDP SEND] voltage_cmd={voltage}, "
+        f"fault_code_cmd={code}, "
+        f"dst={SIMULINK_UDP_IP}:{SIMULINK_UDP_PORT}, "
+        f"src_port={local_port}",
         flush=True,
     )
 
     if print_log:
         print(
-            f"[SIMULINK UPDATED] voltage={voltage}, code={code}, label={state['label']}",
+            f"[COMMAND SENT] mode=UDP, voltage={voltage}, code={code}, label={state['label']}",
             flush=True,
         )
 
     return {
-        "voltage_readback": v_read,
-        "fault_code_readback": c_read,
+        "mode": "udp",
+        "voltage_sent": voltage,
+        "fault_code_sent": code,
+        "simulink_udp_ip": SIMULINK_UDP_IP,
+        "simulink_udp_port": SIMULINK_UDP_PORT,
+        "udp_source_port": local_port,
     }
+
 
 def make_response():
     with state_lock:
+        current_code = int(state["code"])
+        ai_reference = get_ai_reference(current_code)
+
         return {
             "ok": True,
             "power": state["power"],
@@ -202,22 +284,14 @@ def make_response():
             "fault_name": state["fault_name"],
             "label": state["label"],
             "desc": state["desc"],
-            "fault_type": state["fault_type"],
-            "fault_details": state["fault_details"],
-            "currents": dict(state["currents"]),
-            "fc": state["fc"],
             "ai": state["ai"],
             "camera_mode": state["camera_mode"],
+            "command_mode": COMMAND_MODE,
+            "simulink_udp_ip": SIMULINK_UDP_IP,
+            "simulink_udp_port": SIMULINK_UDP_PORT,
+            "ai_reference": ai_reference,
+            "ai_reference_note": "전류값은 AI 학습/분류 기준표이며 Simulink에 강제로 주입하지 않음",
         }
-
-
-def apply_scenario_to_state(code):
-    scenario = SCENARIO_BY_CODE.get(int(code), SCENARIO_BY_CODE[0])
-    state["fault_type"] = scenario["fault_type"]
-    state["fault_details"] = scenario["fault_details"]
-    state["currents"] = dict(scenario["currents"])
-    state["fc"] = scenario["fc"]
-    return scenario
 
 
 def action_response(action):
@@ -225,9 +299,9 @@ def action_response(action):
         result = action()
     except Exception as e:
         with state_lock:
-            state["ai"] = f"MATLAB 연결 오류: {e}"
+            state["ai"] = f"UDP 전송 오류: {e}"
 
-        print(f"[ERROR] MATLAB action error: {e}", flush=True)
+        print(f"[ERROR] UDP action error: {e}", flush=True)
 
         response = make_response()
         response.update({
@@ -245,6 +319,7 @@ def action_response(action):
 
     return jsonify(response)
 
+
 def set_fault(code, ai_text="고장 버튼 입력"):
     code = int(code)
 
@@ -261,16 +336,21 @@ def set_fault(code, ai_text="고장 버튼 입력"):
         state["fault_name"] = fault_name
         state["label"] = label
         state["desc"] = desc
-        apply_scenario_to_state(code)
         state["ai"] = ai_text
 
     readback = send_to_simulink(DEFAULT_VOLTAGE, code, print_log=True)
 
+    ai_reference = get_ai_reference(code)
+
     return {
         "action": "preset",
         "command_label": f"{label} 입력",
-        "command_desc": f"Simulink voltage_cmd={DEFAULT_VOLTAGE}, fault_code_cmd={code} 전송 명령",
+        "command_desc": (
+            f"Simulink UDP 전송: voltage_cmd={DEFAULT_VOLTAGE}, "
+            f"fault_code_cmd={code}"
+        ),
         "readback": readback,
+        "ai_reference": ai_reference,
     }
 
 
@@ -282,8 +362,7 @@ def set_power_on():
         state["fault_code"] = 0
         state["fault_name"] = "NORMAL"
         state["label"] = "POWER ON"
-        state["desc"] = "정상 전원 인가"
-        apply_scenario_to_state(0)
+        state["desc"] = "22.9kV 메인 전원 인가"
         state["ai"] = "전원 ON"
 
     readback = send_to_simulink(DEFAULT_VOLTAGE, 0, print_log=True)
@@ -291,8 +370,12 @@ def set_power_on():
     return {
         "action": "power",
         "command_label": "POWER ON 입력",
-        "command_desc": f"Simulink voltage_cmd={DEFAULT_VOLTAGE}, fault_code_cmd=0 전송 명령",
+        "command_desc": (
+            f"Simulink UDP 전송: voltage_cmd={DEFAULT_VOLTAGE}, "
+            "fault_code_cmd=0"
+        ),
         "readback": readback,
+        "ai_reference": get_ai_reference(0),
     }
 
 
@@ -305,10 +388,6 @@ def set_power_off():
         state["fault_name"] = "NORMAL"
         state["label"] = "POWER OFF"
         state["desc"] = "전원 차단"
-        state["fault_type"] = "OFF"
-        state["fault_details"] = "전원 차단"
-        state["currents"] = {"A": 0.0, "B": 0.0, "C": 0.0}
-        state["fc"] = 0
         state["ai"] = "전원 OFF"
 
     readback = send_to_simulink(POWER_OFF_VOLTAGE, 0, print_log=True)
@@ -316,8 +395,12 @@ def set_power_off():
     return {
         "action": "power",
         "command_label": "POWER OFF 입력",
-        "command_desc": f"Simulink voltage_cmd={POWER_OFF_VOLTAGE}, fault_code_cmd=0 전송 명령",
+        "command_desc": (
+            f"Simulink UDP 전송: voltage_cmd={POWER_OFF_VOLTAGE}, "
+            "fault_code_cmd=0"
+        ),
         "readback": readback,
+        "ai_reference": get_ai_reference(0),
     }
 
 
@@ -330,7 +413,6 @@ def reset_fault():
         state["fault_name"] = "NORMAL"
         state["label"] = "RESET"
         state["desc"] = "고장 해제 / 정상상태"
-        apply_scenario_to_state(0)
         state["ai"] = "고장 해제"
 
     readback = send_to_simulink(DEFAULT_VOLTAGE, 0, print_log=True)
@@ -338,9 +420,14 @@ def reset_fault():
     return {
         "action": "reset",
         "command_label": "RESET 입력",
-        "command_desc": f"Simulink voltage_cmd={DEFAULT_VOLTAGE}, fault_code_cmd=0 전송 명령",
+        "command_desc": (
+            f"Simulink UDP 전송: voltage_cmd={DEFAULT_VOLTAGE}, "
+            "fault_code_cmd=0"
+        ),
         "readback": readback,
+        "ai_reference": get_ai_reference(0),
     }
+
 
 def parse_bool(value):
     if isinstance(value, bool):
@@ -354,6 +441,7 @@ def parse_bool(value):
         return value in ["1", "true", "on", "yes", "y"]
 
     return False
+
 
 def set_camera_enabled(enabled):
     enabled = bool(enabled)
@@ -403,7 +491,7 @@ def trigger_spark():
     spark_update_running = True
 
     with state_lock:
-        state["ai"] = "스파크 감지됨 - Simulink 전송 중"
+        state["ai"] = "스파크 감지됨 - Simulink UDP 전송 중"
 
     def update_spark_fault():
         global spark_update_running
@@ -422,13 +510,14 @@ def trigger_spark():
         daemon=True,
     ).start()
 
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template(
         "index.html",
         faults=faults,
         state=make_response(),
-        scenarios=SCENARIOS,
+        scenarios=AI_REFERENCE_SCENARIOS,
         default_voltage=DEFAULT_VOLTAGE,
     )
 
@@ -438,13 +527,16 @@ def health():
     return jsonify({
         "ok": True,
         "server": "ReGrid Flask Gateway",
-        "model": MODEL_NAME,
-        "engine": ENGINE_NAME,
-        "voltage_block": VOLTAGE_BLOCK,
-        "fault_block": FAULT_BLOCK,
+        "command_mode": COMMAND_MODE,
+        "simulink_udp_ip": SIMULINK_UDP_IP,
+        "simulink_udp_port": SIMULINK_UDP_PORT,
+        "simulink_udp_local_port": SIMULINK_UDP_LOCAL_PORT,
+        "default_voltage": DEFAULT_VOLTAGE,
         "relay_control": "disabled",
+        "ess_control": "disabled",
         "camera": "enabled",
         "n8n": get_webhook_urls(),
+        "note": "MATLAB Engine set_param 방식 사용 안 함. UDP로 [voltage_cmd, fault_code_cmd] 전송.",
     })
 
 
@@ -531,9 +623,6 @@ def manual():
             state["fault_name"] = fault_name
             state["label"] = label
             state["desc"] = desc
-            apply_scenario_to_state(code)
-            if isinstance(currents, dict):
-                state["currents"] = dict(currents)
             state["ai"] = "직접 입력"
 
         readback = send_to_simulink(voltage, code, print_log=True)
@@ -541,21 +630,92 @@ def manual():
         result = {
             "action": "manual",
             "command_label": "MANUAL 입력",
-            "command_desc": f"Simulink voltage_cmd={voltage}, fault_code_cmd={code} 전송 명령",
+            "command_desc": (
+                f"Simulink UDP 전송: voltage_cmd={voltage}, "
+                f"fault_code_cmd={code}"
+            ),
             "readback": readback,
+            "fault_node": fault_node,
+            "ai_reference": get_ai_reference(code),
         }
 
+        # 외부에서 참고용으로 보내는 값이 있으면 응답에만 포함.
+        # Simulink로 직접 주입하지 않음.
         if current is not None:
             result["current"] = current
 
         if currents is not None:
             result["currents"] = currents
 
-        result["fault_node"] = fault_node
-
         return result
 
     return action_response(update_manual)
+
+
+@app.route("/node_decision", methods=["POST"])
+def node_decision():
+    """
+    RPi AI 판단 결과를 Flask가 받는 용도.
+
+    주의:
+    여기서 받은 AI 전류값은 상태/로그/n8n용 참고값으로만 사용.
+    Simulink로는 voltage_cmd와 fault_code_cmd만 보냄.
+    실제 차단기 제어는 RPi → Simulink breaker UDP 포트로 별도 전송하는 구조 권장.
+    """
+    data = request.get_json(silent=True) or {}
+
+    try:
+        code = int(data.get("fault_code", data.get("code", 0)))
+    except (TypeError, ValueError):
+        code = 0
+
+    if code not in faults:
+        code = 0
+
+    try:
+        voltage = float(data.get("voltage", DEFAULT_VOLTAGE))
+    except (TypeError, ValueError):
+        voltage = DEFAULT_VOLTAGE
+
+    fault_node = str(data.get("fault_node", data.get("node", "rpi")))
+    relay_decision = data.get("relay_decision")
+    currents = data.get("currents")
+
+    label, desc, fault_name = faults[code]
+
+    def update_from_node():
+        with state_lock:
+            state["power"] = voltage > 0
+            state["voltage"] = voltage
+            state["code"] = code
+            state["fault_code"] = code
+            state["fault_name"] = fault_name
+            state["label"] = label
+            state["desc"] = desc
+            state["ai"] = f"RPi {fault_node} AI 판단"
+
+        readback = send_to_simulink(voltage, code, print_log=True)
+
+        result = {
+            "action": "node_decision",
+            "fault_node": fault_node,
+            "relay_decision": relay_decision,
+            "command_label": f"{fault_node} → {label}",
+            "command_desc": (
+                f"RPi AI 판단 결과 수신. "
+                f"Simulink UDP 전송: voltage_cmd={voltage}, fault_code_cmd={code}"
+            ),
+            "readback": readback,
+            "ai_reference": get_ai_reference(code),
+        }
+
+        if currents is not None:
+            result["currents"] = currents
+
+        return result
+
+    return action_response(update_from_node)
+
 
 @app.route("/camera/on", methods=["POST", "GET"])
 def camera_on():
@@ -637,16 +797,17 @@ def video_feed():
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
+
 if __name__ == "__main__":
     print("====================================", flush=True)
     print(" ReGrid Flask Gateway starting", flush=True)
     print(f" HOST = {HOST}", flush=True)
     print(f" PORT = {PORT}", flush=True)
-    print(f" MODEL_NAME = {MODEL_NAME}", flush=True)
-    print(f" ENGINE_NAME = {ENGINE_NAME}", flush=True)
-    print(f" MODEL_PATH = {MODEL_PATH}", flush=True)
-    print(f" VOLTAGE_BLOCK = {VOLTAGE_BLOCK}", flush=True)
-    print(f" FAULT_BLOCK = {FAULT_BLOCK}", flush=True)
+    print(f" COMMAND_MODE = {COMMAND_MODE}", flush=True)
+    print(f" SIMULINK_UDP = {SIMULINK_UDP_IP}:{SIMULINK_UDP_PORT}", flush=True)
+    print(f" UDP_SOURCE_PORT = {SIMULINK_UDP_LOCAL_PORT}", flush=True)
+    print(f" DEFAULT_VOLTAGE = {DEFAULT_VOLTAGE}", flush=True)
+    print(" MATLAB ENGINE = DISABLED", flush=True)
     print(" RELAY CONTROL = DISABLED", flush=True)
     print(" ESS CONTROL = DISABLED", flush=True)
     print(" CAMERA = ENABLED", flush=True)
