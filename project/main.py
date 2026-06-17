@@ -13,15 +13,24 @@ def get_env(name, default=None):
     return value
 
 
+# ================================
+# 기본 설정
+# ================================
 NODE_ID = get_env("REGRID_NODE_ID", "node-a")
+
+# 이 RPi가 Simulink 또는 이전 노드에서 데이터를 받는 포트
 HOST = get_env("REGRID_HOST", "0.0.0.0")
 PORT = int(get_env("REGRID_PORT", "5000"))
 
+# 다음 RPi로 값 전달할 때 사용
 NEXT_NODE_IP = get_env("REGRID_CHAIN_NEXT_NODE", None)
 NEXT_NODE_PORT = int(get_env("REGRID_CHAIN_NEXT_PORT", "5000"))
 
+# Simulink가 돌아가는 노트북 IP
 SIMULINK_LAPTOP_IP = get_env("REGRID_SIMULINK_IP", None)
-SIMULINK_CONTROL_PORT = int(get_env("REGRID_SIMULINK_CONTROL_PORT", "6001"))
+
+# Simulink에서 ESS 명령을 받는 UDP Receive 포트
+SIMULINK_ESS_PORT = int(get_env("REGRID_SIMULINK_ESS_PORT", "6010"))
 
 BYTE_ORDER = get_env("REGRID_BYTE_ORDER", "big")
 DATA_MODE = get_env("REGRID_DATA_MODE", "auto")
@@ -29,9 +38,9 @@ DATA_MODE = get_env("REGRID_DATA_MODE", "auto")
 ENABLE_SIMULINK_CONTROL = int(get_env("REGRID_ENABLE_SIMULINK_CONTROL", "1"))
 DEBUG = int(get_env("REGRID_DEBUG", "1"))
 
-# 1이면 fault가 바뀔 때만 Simulink로 제어 신호 전송
-# 0이면 매 패킷마다 Simulink로 제어 신호 전송
-# Simulink에서 보기에는 0 추천
+# 1이면 ESS 명령이 바뀔 때만 전송
+# 0이면 매 패킷마다 계속 전송
+# Simulink에서 확실히 받게 하려면 일단 0 추천
 SEND_ON_CHANGE_ONLY = int(get_env("REGRID_SEND_ON_CHANGE_ONLY", "0"))
 
 # ================================
@@ -42,6 +51,7 @@ TEMP_THRESHOLD = float(get_env("REGRID_TEMP_THRESHOLD", "80.0"))
 SOUND_THRESHOLD = float(get_env("REGRID_SOUND_THRESHOLD", "80.0"))
 
 last_fault = None
+last_ess_cmd = None
 
 
 # ================================
@@ -50,10 +60,18 @@ last_fault = None
 def get_fault_name(fault):
     names = {
         0: "NORMAL",
+
+        # 기존 단순 판단용
         2: "OVERCURRENT",
         5: "HIGH_TEMP",
         6: "SPARK_SOUND",
         9: "MULTI_FAULT",
+
+        # 나중에 AI 모델에서 0~7 고장코드 쓰는 경우 대비
+        1: "F1_ABC_SHORT",
+        3: "F3_BC_SHORT",
+        4: "F4_CA_SHORT",
+        7: "F7_C_GROUND",
     }
     return names.get(fault, "UNKNOWN")
 
@@ -80,10 +98,10 @@ def decode_udp_values(data):
     Simulink에서 오는 값 해석.
 
     권장 Simulink 설정:
-    [Ia, Ib, Ic, Temp, Sound]
+    [Ia, Ib, Ic, Temperature, Sound]
     Data Type Conversion: single
     Mux input count: 5
-    UDP Send → A RPi: 20 bytes
+    UDP Send → RPi: 20 bytes
 
     len=20이면 single 5개
     len=40이면 double 5개
@@ -193,64 +211,76 @@ def classify_multi_fault(values):
 
 
 # ================================
-# Simulink로 차단기 제어 신호 전송
-# 정상: 1.0
-# 고장: 0.0
+# Simulink로 ESS ON/OFF 신호 전송
+# ess_on=True  -> 1.0
+# ess_on=False -> 0.0
 # ================================
-def send_breaker_signal_to_simulink(closed):
+def send_ess_cmd_to_simulink(ess_on):
     if not ENABLE_SIMULINK_CONTROL:
         return
 
     if not SIMULINK_LAPTOP_IP:
-        print("[SIMULINK CTRL] No SIMULINK_LAPTOP_IP configured.")
+        print("[ESS CTRL] No REGRID_SIMULINK_IP configured.")
         return
 
-    value = 1.0 if closed else 0.0
+    value = 1.0 if ess_on else 0.0
 
     # Simulink UDP Receive 설정:
-    # Data type: double
-    # Data size: [1]
-    # Byte order: Big Endian
-    fmt = ">d" if BYTE_ORDER == "big" else "<d"
+    # Data type: single
+    # Data size: [1 1]
+    # Byte order: Big-endian
+    fmt = ">f" if BYTE_ORDER == "big" else "<f"
     data = struct.pack(fmt, value)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     try:
-        sock.sendto(data, (SIMULINK_LAPTOP_IP, SIMULINK_CONTROL_PORT))
+        sock.sendto(data, (SIMULINK_LAPTOP_IP, SIMULINK_ESS_PORT))
         print(
-            f"[SIMULINK CTRL] Sent breaker signal {value:.1f} "
-            f"to {SIMULINK_LAPTOP_IP}:{SIMULINK_CONTROL_PORT}"
+            f"[ESS CTRL] Sent ess_cmd={value:.1f} "
+            f"to {SIMULINK_LAPTOP_IP}:{SIMULINK_ESS_PORT}"
         )
     except Exception as e:
-        print(f"[SIMULINK CTRL ERROR] {e}")
+        print(f"[ESS CTRL ERROR] {e}")
     finally:
         sock.close()
 
 
 # ================================
-# Fault 상태에 따라 Simulink 릴레이/차단기 제어
+# Fault 상태에 따라 ESS 제어
+# 현재 임시 로직:
+# 정상 fault=0 -> ESS OFF
+# 고장 fault!=0 -> ESS ON
+#
+# 나중에 AI/RPi 통신 결과가 들어오면
+# 여기의 ess_on 결정 부분만 바꾸면 됨.
 # ================================
-def control_by_fault(fault):
-    global last_fault
+def control_ess_by_fault(fault):
+    global last_fault, last_ess_cmd
 
-    changed = last_fault != fault
+    fault_changed = last_fault != fault
     last_fault = fault
 
-    if SEND_ON_CHANGE_ONLY and not changed:
+    # 임시 ESS 판단 로직
+    ess_on = fault != 0
+
+    ess_changed = last_ess_cmd != ess_on
+    last_ess_cmd = ess_on
+
+    if SEND_ON_CHANGE_ONLY and not ess_changed:
         return
 
-    if fault == 0:
-        if changed:
-            print("[CONTROL] NORMAL -> Simulink breaker CLOSE")
-        send_breaker_signal_to_simulink(closed=True)
-    else:
-        if changed:
+    if ess_on:
+        if fault_changed or ess_changed:
             print(
-                f"[CONTROL] FAULT -> Simulink breaker OPEN | "
+                f"[CONTROL] FAULT detected -> ESS ON | "
                 f"fault={fault}({get_fault_name(fault)})"
             )
-        send_breaker_signal_to_simulink(closed=False)
+        send_ess_cmd_to_simulink(ess_on=True)
+    else:
+        if fault_changed or ess_changed:
+            print("[CONTROL] NORMAL -> ESS OFF")
+        send_ess_cmd_to_simulink(ess_on=False)
 
 
 # ================================
@@ -276,8 +306,11 @@ def send_values_to_next_node(values):
         sock.sendto(data, (NEXT_NODE_IP, NEXT_NODE_PORT))
         print(
             f"[CHAIN] {NODE_ID} -> {NEXT_NODE_IP}:{NEXT_NODE_PORT} | "
-            f"Ia={send_values[0]:.2f}, Ib={send_values[1]:.2f}, Ic={send_values[2]:.2f}, "
-            f"Temp={send_values[3]:.2f}, Sound={send_values[4]:.2f}"
+            f"Ia={send_values[0]:.2f}, "
+            f"Ib={send_values[1]:.2f}, "
+            f"Ic={send_values[2]:.2f}, "
+            f"Temp={send_values[3]:.2f}, "
+            f"Sound={send_values[4]:.2f}"
         )
     except Exception as e:
         print(f"[CHAIN ERROR] failed to send to {NEXT_NODE_IP}:{NEXT_NODE_PORT} | {e}")
@@ -293,14 +326,14 @@ def receive_values():
     sock.bind((HOST, PORT))
 
     print("===================================")
-    print("ReGrid Multi-Fault Receiver")
+    print("ReGrid Node Receiver + ESS Control")
     print(f"NODE_ID={NODE_ID}")
     print(f"HOST={HOST}")
     print(f"PORT={PORT}")
     print(f"NEXT_NODE_IP={NEXT_NODE_IP}")
     print(f"NEXT_NODE_PORT={NEXT_NODE_PORT}")
     print(f"SIMULINK_LAPTOP_IP={SIMULINK_LAPTOP_IP}")
-    print(f"SIMULINK_CONTROL_PORT={SIMULINK_CONTROL_PORT}")
+    print(f"SIMULINK_ESS_PORT={SIMULINK_ESS_PORT}")
     print(f"BYTE_ORDER={BYTE_ORDER}")
     print(f"DATA_MODE={DATA_MODE}")
     print(f"CURRENT_THRESHOLD={CURRENT_THRESHOLD}")
@@ -311,6 +344,7 @@ def receive_values():
     print(f"DEBUG={DEBUG}")
     print("Expected packet: [Ia, Ib, Ic, Temperature, Sound]")
     print("Recommended packet length: 20 bytes = single 5 values")
+    print("ESS command packet to Simulink: single 1 value, 4 bytes")
     print("===================================")
 
     while True:
@@ -349,8 +383,11 @@ def receive_values():
             f"REASON={result['reason']}"
         )
 
-        control_by_fault(fault)
+        # A 노드만 Simulink로 ESS ON/OFF 명령 전송
+        if NODE_ID == "node-a":
+            control_ess_by_fault(fault)
 
+        # A/B 노드는 다음 노드로 값 전달
         if NODE_ID in ("node-a", "node-b"):
             send_values_to_next_node(values)
 
